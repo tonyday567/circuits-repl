@@ -76,24 +76,52 @@ handle r name home body = do
           replCommit r [line]
         hFlush stderr
 
+-- | True if this bus body is for us.
+--
+-- Matches:
+--   deep: …
+--   @deep …
+--   … deep: …          (mid-line address — common on muster)
+--   deep-harness: …    (session title alias when name is deep)
 shouldAnswer :: Text -> Text -> Bool
 shouldAnswer name b =
   let n = T.toLower name
       low = T.toLower b
-   in (n <> ":") `T.isPrefixOf` low
-        || ("@" <> n) `T.isPrefixOf` low
+      tag = n <> ":"
+      at = "@" <> n
+   in tag `T.isPrefixOf` low
+        || at `T.isPrefixOf` low
+        || (" " <> tag) `T.isInfixOf` low
+        || (" " <> at) `T.isInfixOf` low
+        || (n == "deep" && "deep-harness:" `T.isInfixOf` low)
 
+-- | Strip the first address tag; keep the rest of the body as the task.
 stripAddress :: Text -> Text -> Text
 stripAddress name b =
-  let low = T.toLower b
-      n = T.toLower name
-      dropPref p t =
-        if T.toLower p `T.isPrefixOf` low
-          then T.drop (T.length p) t
-          else t
-   in T.strip $
-        dropPref (n <> ":") $
-          dropPref ("@" <> n <> " ") b
+  let n = T.toLower name
+      low = T.toLower b
+      tag = n <> ":"
+      at = "@" <> n
+      stripAt i =
+        let rest = T.drop i b
+            -- drop optional space after tag
+         in T.strip $ T.dropWhile (== ' ') rest
+   in case T.breakOn tag low of
+        (_, r)
+          | not (T.null r) ->
+              stripAt (T.length b - T.length r + T.length tag)
+        _ -> case T.breakOn at low of
+          (_, r)
+            | not (T.null r) ->
+                stripAt (T.length b - T.length r + T.length at)
+          _ ->
+            if n == "deep" && "deep-harness:" `T.isInfixOf` low
+              then case T.breakOn "deep-harness:" low of
+                (_, r)
+                  | not (T.null r) ->
+                      stripAt (T.length b - T.length r + T.length ("deep-harness:" :: Text))
+                _ -> T.strip b
+              else T.strip b
 
 -- | Frame task so hermes acts as deep-at-spec (tools + mg surface).
 rolePrompt :: Text -> FilePath -> Text -> Text
