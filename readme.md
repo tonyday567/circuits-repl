@@ -1,29 +1,17 @@
-# cursor
+# circuits-repl
 
-Position in an append-only log — *what is new since I last asked?*
-
-Two backends, one type:
-
-| constructor | storage | survives restart |
-|-------------|---------|------------------|
-| `newMem` | `IORef` | no |
-| `newFile` | decimal file (`N\n`) | yes |
+Repl primitive for the circuits ecosystem: **commit / emit dual**, turn,
+channel, session — plus the shared `Cursor` over append-only logs.
 
 ```haskell
-import Cursor
-
-c <- newMem 0
-pollLines c ["a", "b"]       -- ["a","b"]
-pollLines c ["a", "b", "c"]  -- ["c"]
-
-c <- newFile ".cursor-alice"
-pollFile c "log.md"          -- new lines since last poll
-seekEndFile c "log.md"       -- attach at tail
+-- dual ends (same object type — Queue dual)
+replCommit :: Repl -> [Text] -> IO ()   -- write TO the agent
+replEmit   :: Repl -> IO [Text]         -- read FROM the agent
+endsRepl   :: Repl -> (Commit IO [Text], Emit IO [Text])
 ```
 
-Standalone primitive for process harnesses (repl emit) and coordination buses (muster read). Depends only on `base`, `directory`, and `text`.
+Backends: FIFO, PTY, inject, Hermes session JSON (`replOpenHermes`).
 
-```
-cabal test
-cabal-docspec
-```
+Concrete transports (TCP/WebSocket, timers) live in **`circuits-io`**.
+
+Formerly the `cursor` package; expanded to own the free REPL surface.

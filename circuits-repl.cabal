@@ -1,0 +1,181 @@
+cabal-version: 3.0
+name: circuits-repl
+version: 0.1.0.0
+license: BSD-3-Clause
+license-file: LICENSE
+copyright: Tony Day (c) 2026
+category: control
+author: Tony Day
+maintainer: tonyday567@gmail.com
+homepage: https://github.com/tonyday567/circuits-repl
+bug-reports: https://github.com/tonyday567/circuits-repl/issues
+synopsis: Repl primitive — commit/emit dual, turn, channel, session
+description:
+  Free-standing REPL library for the circuits ecosystem.
+  Cursor over append-only logs; 'Circuit.Repl' free dual ends
+  (commit/emit as @[Text] → [Text]@); turns; multi-agent channels
+  ('Circuit.Comm') and ask/answer sessions ('Circuit.Session').
+  Concrete transports (sockets, timers) live in @circuits-io@.
+
+build-type: Simple
+tested-with: ghc ==9.14.1
+
+source-repository head
+  type: git
+  location: https://github.com/tonyday567/circuits-repl
+
+common ghc-options-stanza
+  ghc-options:
+    -Wall
+    -Wno-unused-imports
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wpartial-fields
+    -Wredundant-constraints
+
+common ghc2024-stanza
+  if impl(ghc >=9.10)
+    default-language:
+      GHC2024
+  else
+    default-language:
+      GHC2021
+
+library
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: src
+  exposed-modules:
+    Cursor
+    Circuit.Comm
+    Circuit.Repl
+    Circuit.Repl.Turn
+    Circuit.Session
+
+  build-depends:
+    aeson >=2.0 && <2.3,
+    base >=4.18 && <5,
+    bytestring >=0.11 && <0.13,
+    circuits >=0.1.0.0 && <0.3,
+    containers >=0.6 && <0.9,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    posix-pty >=0.2 && <0.3,
+    process >=1.6 && <1.7,
+    text >=2.0 && <3,
+    time >=1.12 && <2,
+    unix,
+    vector >=0.13 && <0.14
+
+test-suite cursor-test
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Main.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    temporary >=1.3 && <1.5,
+    text >=2.0 && <3
+
+test-suite circuits-repl-test
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: ReplMain.hs
+  other-modules: MockBackend
+  build-depends:
+    aeson >=2.0 && <2.3,
+    base >=4.18 && <5,
+    bytestring >=0.11 && <0.13,
+    circuits >=0.1.0.0 && <0.3,
+    circuits-repl,
+    text >=2.0 && <3,
+    process >=1.6 && <1.7,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    async >=2.2 && <3,
+    stm >=2.5 && <3,
+    tasty >=1.4,
+    tasty-hunit >=0.10,
+    vector >=0.13 && <0.14
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable mock-repl
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: test/mock-repl
+  main-is: Main.hs
+  build-depends:
+    base >=4.18 && <5,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable cabal-repl-example
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: cabal-repl.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits-repl,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable cabal-repl-real
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: cabal-repl-real.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable agent-bridge
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: agent-bridge.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable dual-spike
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: dual-spike.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits >=0.1.0.0 && <0.3,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
