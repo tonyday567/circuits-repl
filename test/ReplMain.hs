@@ -29,6 +29,7 @@ main =
       [ replTests,
         backendTests,
         hermesTests,
+        musterReplTests,
         channelTests,
         sessionTests
       ]
@@ -294,6 +295,65 @@ appendAssistant path content = do
 
 appendAssistantEmpty :: FilePath -> IO ()
 appendAssistantEmpty path = appendAssistant path ""
+
+-- ---------------------------------------------------------------------------
+-- MusterRepl — Comm channel as free dual
+-- ---------------------------------------------------------------------------
+
+musterReplTests :: TestTree
+musterReplTests =
+  testGroup
+    "MusterRepl (Comm dual)"
+    [ testCase "commit/emit with self-echo filtered" $ do
+        let tag = "muster-repl-1"
+            cfgA =
+              (defaultChannelConfig "alice")
+                { chStdinPath = "/tmp/muster-repl-" <> tag <> "-in",
+                  chStdoutPath = "/tmp/muster-repl-" <> tag <> "-out.md",
+                  chStderrPath = "/tmp/muster-repl-" <> tag <> "-err.md"
+                }
+            cfgB =
+              cfgA {chName = "bob"}
+        mapM_
+          (\p -> whenM (doesFileExist p) (removeFile p))
+          [ chStdinPath cfgA,
+            chStdoutPath cfgA,
+            chStderrPath cfgA,
+            chStdoutPath cfgA <> ".cursor",
+            chStdoutPath cfgA <> ".cursor-custom"
+          ]
+
+        alice <- openMusterRepl cfgA
+        threadDelay 200_000
+        bob <- attachMusterRepl cfgB
+        threadDelay 100_000
+
+        -- drain any bus noise
+        _ <- replEmit alice
+        _ <- replEmit bob
+
+        replCommit alice ["hello from alice"]
+        threadDelay 150_000
+
+        fromBob <- replEmit bob
+        assertEqual "bob sees alice body" ["hello from alice"] fromBob
+
+        fromAlice <- replEmit alice
+        assertBool "alice does not self-echo" (null fromAlice)
+
+        replCommit bob ["reply from bob"]
+        threadDelay 150_000
+
+        toAlice <- replEmit alice
+        assertEqual "alice sees bob" ["reply from bob"] toAlice
+
+        toBob <- replEmit bob
+        assertBool "bob does not self-echo" (null toBob)
+
+        replClose bob
+        replClose alice
+        threadDelay 100_000
+    ]
 
 -- ---------------------------------------------------------------------------
 -- Channel tests (multi-agent comms using cat bus)

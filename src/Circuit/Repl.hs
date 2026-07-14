@@ -34,6 +34,7 @@ module Circuit.Repl
     replOpenInject,
     replOpenPty,
     replOpenHermes,
+    replOpenCustom,
     replAttach,
     replClose,
 
@@ -162,6 +163,13 @@ data Backend
         beSessionPath :: FilePath,
         -- | Index into the @messages@ array — next message to consider on emit.
         beMsgIndex :: IORef Int
+      }
+  | -- | Opaque dual ends — used by 'Circuit.Comm' MusterRepl without a
+    -- module cycle (Comm imports Repl; Repl must not import Comm).
+    BackendCustom
+      { beCustomCommit :: [Text] -> IO (),
+        beCustomEmit :: IO [Text],
+        beCustomClose :: IO ()
       }
 -- | A live agent session: process (or inject) + log + cursor.
 --
@@ -307,6 +315,26 @@ replOpenHermes path = do
   Cur.set cursor 0
   mkRepl cfg (BackendHermes path idx) cursor
 
+-- | Open a 'Repl' over custom commit/emit/close actions.
+--
+-- Used by 'Circuit.Comm.openMusterRepl' / 'attachMusterRepl' so multi-agent
+-- channels share the free dual without Repl importing Comm.
+replOpenCustom ::
+  ReplConfig ->
+  -- | commit
+  ([Text] -> IO ()) ->
+  -- | emit
+  IO [Text] ->
+  -- | close
+  IO () ->
+  IO Repl
+replOpenCustom cfg commit emit close = do
+  -- Separate cursor file so nested Comm (inner FIFO Repl) does not share
+  -- the owner @.cursor@ of a process-backed open of the same log path.
+  cursor <- Cur.newFile (replStdoutPath cfg <> ".cursor-custom")
+  Cur.set cursor 0
+  mkRepl cfg (BackendCustom commit emit close) cursor
+
 -- | Pump PTY master reads into the append-only log (byte chunks).
 pumpPtyToLog :: Pty -> FilePath -> IO ()
 pumpPtyToLog pty logPath = go
@@ -332,6 +360,8 @@ replClose r = case replBackend r of
         killThread bePump
   BackendInject {} -> pure ()
   BackendHermes {} -> pure ()
+  BackendCustom {beCustomClose} -> beCustomClose
+
 -- ---------------------------------------------------------------------------
 -- Dual ends
 -- ---------------------------------------------------------------------------
@@ -347,6 +377,7 @@ replCommit :: Repl -> [Text] -> IO ()
 replCommit _ [] = pure ()
 replCommit r ts = case replBackend r of
   BackendHermes {} -> hermesCommit r ts
+  BackendCustom {beCustomCommit} -> beCustomCommit ts
   _ -> mapM_ (replCommitLine r) ts
 
 -- | Line-level backend write (private transport).
@@ -362,6 +393,8 @@ replCommitLine r t = case replBackend r of
     beInject t
   BackendHermes {} ->
     hermesCommit r [t]
+  BackendCustom {beCustomCommit} ->
+    beCustomCommit [t]
 
 -- | Read all new lines from the agent (emit end).
 --
@@ -371,9 +404,12 @@ replCommitLine r t = case replBackend r of
 --
 -- Hermes: projects new non-empty @assistant@ message contents (skips @tool@
 -- and empty / tool-call-only assistants).
+--
+-- Custom (MusterRepl): backend-defined poll.
 replEmit :: Repl -> IO [Text]
 replEmit r = case replBackend r of
   BackendHermes {} -> hermesEmit r
+  BackendCustom {beCustomEmit} -> beCustomEmit
   _ -> logEmit r
 
 -- | Line-log emit (FIFO / PTY / inject).

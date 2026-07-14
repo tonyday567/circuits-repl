@@ -73,6 +73,10 @@ module Circuit.Comm
     channelRecv,
     channelRecvBlocking,
 
+    -- * MusterRepl — channel as free dual 'Repl'
+    openMusterRepl,
+    attachMusterRepl,
+
     -- * Framing
     frameMessage,
     parseMessage,
@@ -244,6 +248,43 @@ channelRecvBlocking ch timeoutUs = go 0 10000
 -- ---------------------------------------------------------------------------
 -- Framing
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- MusterRepl — free dual over a channel
+-- ---------------------------------------------------------------------------
+
+-- | Open a multi-agent channel and present it as a 'Repl'.
+--
+--   * __commit__ @ts@ — @mapM_ channelSend@ (each 'Text' is one body line;
+--     framing @[name] body@ is applied by 'channelSend')
+--   * __emit__ — 'channelRecv' bodies with __self-echo filtered__
+--     (messages from @chName@ are dropped, like muster watch exclude-own)
+--
+-- Identity is @chName@ in 'ChannelConfig'. Transport is Comm's @cat@ bus —
+-- no shelling out to the muster binary.
+openMusterRepl :: ChannelConfig -> IO Repl
+openMusterRepl cfg = do
+  ch <- channelOpen cfg
+  channelAsRepl ch
+
+-- | Attach to an existing channel as a free dual 'Repl' (same dual as
+-- 'openMusterRepl'; does not own the bus process).
+attachMusterRepl :: ChannelConfig -> IO Repl
+attachMusterRepl cfg = do
+  ch <- channelAttach cfg
+  channelAsRepl ch
+
+-- | Wrap an open 'Channel' as 'BackendCustom' dual ends.
+channelAsRepl :: Channel -> IO Repl
+channelAsRepl ch = do
+  let cfg = chCfg ch
+      name = chName cfg
+      commit ts = mapM_ (channelSend ch) ts
+      emit = do
+        msgs <- channelRecv ch
+        pure [body | (sender, body) <- msgs, sender /= name]
+      close = channelClose ch
+  replOpenCustom (toReplConfig cfg) commit emit close
 
 -- | Frame a message with sender prefix.
 --
