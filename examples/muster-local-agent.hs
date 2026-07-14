@@ -83,7 +83,6 @@ shouldAnswer name b =
       low = T.toLower b
    in (n <> ":") `T.isPrefixOf` low
         || ("@" <> n) `T.isPrefixOf` low
-        || "llama:" `T.isPrefixOf` low
 
 stripAddress :: Text -> Text -> Text
 stripAddress name b =
@@ -98,20 +97,36 @@ stripAddress name b =
           dropPref ("@" <> n <> " ") $
             dropPref "llama:" b
 
--- | One-shot hermes on the linux farm (ollama llama3.1:8b).
+-- | One-shot hermes on the linux farm.
+--
+-- Env:
+--   HERMES_SSH      default tony@100.82.255.106
+--   HERMES_MODEL    default llama3.1:8b
+--   HERMES_PROVIDER default custom (ollama); use deepseek for deep-harness
+--   HERMES_CONTINUE optional session title for --continue (e.g. deep-harness)
+--   HERMES_MAX_TURNS default 4
 hermesQuery :: Text -> IO Text
 hermesQuery prompt = do
   host <- maybe "tony@100.82.255.106" id <$> lookupEnv "HERMES_SSH"
   model <- maybe "llama3.1:8b" id <$> lookupEnv "HERMES_MODEL"
+  provider <- maybe "custom" id <$> lookupEnv "HERMES_PROVIDER"
+  cont <- lookupEnv "HERMES_CONTINUE"
+  maxTurns <- maybe "4" id <$> lookupEnv "HERMES_MAX_TURNS"
   let q = shellQuote (T.unpack prompt)
+      contFlag = maybe "" (\t -> " --continue " <> shellQuote t) cont
       remote =
         "export PATH=\"$HOME/.local/bin:$PATH\"; "
           <> "hermes chat -q "
           <> q
           <> " -m "
-          <> model
-          <> " --provider custom -Q --max-turns 4 2>/dev/null"
-      cmd = "ssh -o BatchMode=yes -o ConnectTimeout=15 " <> host <> " " <> shellQuote remote
+          <> shellQuote model
+          <> " --provider "
+          <> shellQuote provider
+          <> contFlag
+          <> " -Q --max-turns "
+          <> maxTurns
+          <> " 2>/dev/null"
+      cmd = "ssh -o BatchMode=yes -o ConnectTimeout=30 " <> host <> " " <> shellQuote remote
   out <- readCreateProcess (shell cmd) ""
   pure $ T.pack $ lastNonEmpty (lines out)
 
