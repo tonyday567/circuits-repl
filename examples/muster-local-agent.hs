@@ -18,14 +18,13 @@ import Circuit.Repl
 import Control.Concurrent (threadDelay)
 import Control.Monad (forever, when)
 import Data.Char (isSpace)
-import Data.List (isInfixOf)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.IO qualified as TIO
 import System.Directory (getHomeDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.FilePath ((</>))
-import System.IO (hFlush, hPutStrLn, stderr, stdout)
+import System.IO (hFlush, hPutStrLn, stderr)
 import System.Process (readCreateProcess, shell)
 
 main :: IO ()
@@ -49,11 +48,11 @@ main = do
       <> T.unpack name
       <> "] on "
       <> root
-  hPutStrLn stderr "emit←muster  commit→hermes(ssh ollama)→muster"
+  hPutStrLn stderr "emit←muster  commit→hermes→muster (HERMES_LOCAL default; set HERMES_SSH for farm)"
   r <- attachMusterRepl cfg
   -- drain backlog so we only answer new posts
   _ <- replEmit r
-  hPutStrLn stderr "ready — post e.g.  llama: what is 2+2?"
+  hPutStrLn stderr "ready — post e.g.  deep: hello   or   llama: what is 2+2?"
   hFlush stderr
   forever $ do
     msgs <- replEmit r
@@ -97,24 +96,27 @@ stripAddress name b =
           dropPref ("@" <> n <> " ") $
             dropPref "llama:" b
 
--- | One-shot hermes on the linux farm.
+-- | One-shot hermes (local by default; optional SSH farm).
 --
 -- Env:
---   HERMES_SSH      default tony@100.82.255.106
---   HERMES_MODEL    default llama3.1:8b
---   HERMES_PROVIDER default custom (ollama); use deepseek for deep-harness
+--   HERMES_LOCAL    if set (any value), run hermes on this machine (default when
+--                   HERMES_SSH is unset or empty)
+--   HERMES_SSH      if set non-empty, ssh to this host (e.g. tony@100.82.255.106)
+--   HERMES_MODEL    default deepseek-v4-pro (mac deep); use llama3.1:8b for ollama farm
+--   HERMES_PROVIDER default deepseek; use custom for ollama
 --   HERMES_CONTINUE optional session title for --continue (e.g. deep-harness)
 --   HERMES_MAX_TURNS default 4
 hermesQuery :: Text -> IO Text
 hermesQuery prompt = do
-  host <- maybe "tony@100.82.255.106" id <$> lookupEnv "HERMES_SSH"
-  model <- maybe "llama3.1:8b" id <$> lookupEnv "HERMES_MODEL"
-  provider <- maybe "custom" id <$> lookupEnv "HERMES_PROVIDER"
+  mSsh <- lookupEnv "HERMES_SSH"
+  mLocal <- lookupEnv "HERMES_LOCAL"
+  model <- maybe "deepseek-v4-pro" id <$> lookupEnv "HERMES_MODEL"
+  provider <- maybe "deepseek" id <$> lookupEnv "HERMES_PROVIDER"
   cont <- lookupEnv "HERMES_CONTINUE"
   maxTurns <- maybe "4" id <$> lookupEnv "HERMES_MAX_TURNS"
   let q = shellQuote (T.unpack prompt)
       contFlag = maybe "" (\t -> " --continue " <> shellQuote t) cont
-      remote =
+      hermesCmd =
         "export PATH=\"$HOME/.local/bin:$PATH\"; "
           <> "hermes chat -q "
           <> q
@@ -126,7 +128,17 @@ hermesQuery prompt = do
           <> " -Q --max-turns "
           <> maxTurns
           <> " 2>/dev/null"
-      cmd = "ssh -o BatchMode=yes -o ConnectTimeout=30 " <> host <> " " <> shellQuote remote
+      useSsh = case (mLocal, mSsh) of
+        (Just _, _) -> False
+        (_, Just h) | not (null h) -> True
+        _ -> False -- default: local hermes (mac deep)
+      cmd
+        | useSsh =
+            "ssh -o BatchMode=yes -o ConnectTimeout=30 "
+              <> fromMaybe "" mSsh
+              <> " "
+              <> shellQuote hermesCmd
+        | otherwise = hermesCmd
   out <- readCreateProcess (shell cmd) ""
   pure $ T.pack $ lastNonEmpty (lines out)
 
