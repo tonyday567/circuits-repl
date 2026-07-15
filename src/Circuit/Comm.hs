@@ -284,7 +284,7 @@ channelAsRepl ch = do
         msgs <- channelRecv ch
         pure [body | (sender, body) <- msgs, sender /= name]
       close = channelClose ch
-  replOpenCustom (toReplConfig cfg) commit emit close
+  replOpenCustom commit emit close
 
 -- | Frame a message with sender prefix.
 --

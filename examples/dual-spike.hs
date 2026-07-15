@@ -127,7 +127,6 @@ spike :: Repl -> ReplConfig -> (Text -> Bool) -> [(Text, Text)] -> IO ()
 spike _ _ _ [] = failMsg "spike requires at least one (command, expected) pair"
 spike _ _ _ [_] = failMsg "spike requires at least two (command, expected) pairs"
 spike r cfg isBoundary ((cmd1, expect1) : (cmd2, expect2) : _) = do
-  let (_write, _emit) = endsRepl r
   step "0 endsRepl" "Commit + Emit wires in hand (Queue dual shape)"
 
   -- 1. free emit only — no commit

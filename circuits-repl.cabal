@@ -51,6 +51,7 @@ library
     Cursor
     Circuit.Comm
     Circuit.Repl
+    Circuit.Repl.Agent
     Circuit.Repl.Turn
     Circuit.Session
 

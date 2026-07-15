@@ -3,7 +3,9 @@
 module Main where
 
 import Circuit.Comm
+import Circuit.Int (AgentVerb (..), IntMorph (runIntMorph), agentRoster, causal, verbDelta)
 import Circuit.Repl
+import Circuit.Repl.Agent (openAgentRosterRepl)
 import Circuit.Session
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar
@@ -31,7 +33,8 @@ main =
         hermesTests,
         musterReplTests,
         channelTests,
-        sessionTests
+        sessionTests,
+        agentIntTests
       ]
 
 -- ---------------------------------------------------------------------------
@@ -202,6 +205,44 @@ replTests =
 -- ---------------------------------------------------------------------------
 -- Backend abstraction (FakeFifo vs FakePty, same free dual)
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- BackendCustom ↔ causal/IN (agent roster)
+-- ---------------------------------------------------------------------------
+
+agentIntTests :: TestTree
+agentIntTests =
+  testGroup
+    "BackendCustom agentRoster ↔ causal/IN"
+    [ testCase "commit/emit tracks pure Int morph" $ do
+        r <- openAgentRosterRepl
+        let pureStep n v = fst (runIntMorph (causal agentRoster) (n, verbDelta v))
+        -- join
+        pureStep 0 Join @?= 1
+        replCommit r ["join"]
+        e1 <- replEmit r
+        e1 @?= ["1"]
+        -- ack
+        pureStep 1 Ack @?= 1
+        replCommit r ["ack"]
+        e2 <- replEmit r
+        e2 @?= ["1"]
+        -- quit
+        pureStep 1 Quit @?= 0
+        replCommit r ["quit"]
+        e3 <- replEmit r
+        e3 @?= ["0"]
+        -- endsRepl dual still well-typed and live
+        let (write, read_) = endsRepl r
+        _ <- pure (write, read_)
+        replClose r
+    , testCase "unknown commit is a no-op" $ do
+        r <- openAgentRosterRepl
+        replCommit r ["nope"]
+        e <- replEmit r
+        e @?= ["0"]
+        replClose r
+    ]
 
 backendTests :: TestTree
 backendTests =
