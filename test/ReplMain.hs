@@ -10,20 +10,14 @@ import Circuit.Repl
 import Circuit.Repl.Agent (AgentVerb (..), agentRoster, openAgentRosterRepl, verbDelta)
 import Circuit.Repl.PingPong (openPingPongRepl, pingPongLens)
 import Circuit.Repl.Turn (TurnConfig (..), defaultTurnConfig, turnUntil)
-import Circuit.Session
 import Control.Arrow (Kleisli (..), runKleisli)
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar
+import Control.Concurrent (threadDelay)
 import Control.Monad (forM_, when)
-import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
-import Data.Aeson.KeyMap qualified as KM
-import Data.ByteString.Lazy qualified as LBS
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Vector qualified as V
 import MockBackend (MockMode (..), openMockRepl)
-import System.Directory (doesFileExist, removeFile, removePathForcibly)
+import System.Directory (doesFileExist, removeFile)
 import System.IO (hPutStrLn, stderr)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -35,10 +29,8 @@ main =
       "circuits-repl"
       [ replTests,
         backendTests,
-        hermesTests,
         musterReplTests,
         channelTests,
-        sessionTests,
         agentIntTests,
         pingPongIntTests
       ]
@@ -332,77 +324,6 @@ backendTests =
       replClose r
 
 -- ---------------------------------------------------------------------------
--- Hermes session-file backend
--- ---------------------------------------------------------------------------
-
-hermesTests :: TestTree
-hermesTests =
-  testGroup
-    "BackendHermes (session JSON)"
-    [ testCase "commit user then emit assistant" $ do
-        let path = "/tmp/circuits-io-hermes-session.json"
-        removePathForcibly path
-        removePathForcibly (path <> ".lock")
-        removePathForcibly (path <> ".cursor-hermes")
-        writeMinimalSession path
-          [ object ["role" .= ("user" :: Text), "content" .= ("hi" :: Text)]
-          , object ["role" .= ("assistant" :: Text), "content" .= ("hello" :: Text)]
-          ]
-
-        r <- replOpenHermes path
-        -- tail attach: history not re-emitted
-        early <- replEmit r
-        assertBool "no history on open" (null early)
-
-        replCommit r ["what is 2+2?"]
-        -- still no assistant reply yet
-        mid <- replEmit r
-        assertBool "no assistant yet" (null mid)
-
-        -- simulate Hermes writing an assistant reply (+ empty tool-call skip)
-        appendAssistant path "4"
-        appendAssistantEmpty path
-
-        out <- replEmit r
-        assertEqual "assistant content" ["4"] out
-
-        again <- replEmit r
-        assertBool "idempotent emit" (null again)
-
-        replClose r
-    ]
-
-writeMinimalSession :: FilePath -> [Value] -> IO ()
-writeMinimalSession path msgs = do
-  let o =
-        object
-          [ "session_id" .= ("test" :: Text)
-          , "message_count" .= length msgs
-          , "messages" .= msgs
-          ]
-  LBS.writeFile path (encode o)
-
-appendAssistant :: FilePath -> Text -> IO ()
-appendAssistant path content = do
-  bs <- LBS.readFile path
-  case eitherDecode bs of
-    Left err -> assertFailure ("session decode: " <> err)
-    Right (Object o) -> do
-      let old = case KM.lookup "messages" o of
-            Just (Array arr) -> arr
-            _ -> V.empty
-          msg = object ["role" .= ("assistant" :: Text), "content" .= content]
-          new = old <> V.singleton msg
-          o' =
-            KM.insert "messages" (Array new) $
-              KM.insert "message_count" (Number (fromIntegral (V.length new))) o
-      LBS.writeFile path (encode (Object o'))
-    Right _ -> assertFailure "expected object"
-
-appendAssistantEmpty :: FilePath -> IO ()
-appendAssistantEmpty path = appendAssistant path ""
-
--- ---------------------------------------------------------------------------
 -- MusterRepl — Comm channel as free dual
 -- ---------------------------------------------------------------------------
 
@@ -606,181 +527,6 @@ channelTests =
         [chStdinPath cfg, chStdoutPath cfg, chStderrPath cfg]
       whenM (doesFileExist (chStdinPath cfg)) (removeFile (chStdinPath cfg))
 
--- ---------------------------------------------------------------------------
--- Session tests (protocol: ask/answer, tell/recv)
--- ---------------------------------------------------------------------------
-
-sessionTests :: TestTree
-sessionTests =
-  testGroup
-    "Session (ask/answer protocol)"
-    [ testCase "parseMsg broadcast" $ do
-        assertEqual
-          "broadcast"
-          (Just (Broadcast "sender" "hello world"))
-          (parseMsg "sender" "hello world"),
-      testCase "parseMsg question" $ do
-        assertEqual
-          "question"
-          (Just (Question "agent" "agent.0" "should I refactor?"))
-          (parseMsg "agent" "? agent.0 should I refactor?"),
-      testCase "parseMsg answer" $ do
-        assertEqual
-          "answer"
-          (Just (Answer "agent" "agent.0" "yes go ahead"))
-          (parseMsg "agent" "! agent.0 yes go ahead"),
-      testCase "parseMsg rejects malformed question (no id)" $ do
-        assertBool "no id" (isNothing (parseMsg "agent" "? ")),
-      testCase "parseMsg rejects malformed question (no body)" $ do
-        assertBool "no body" (isNothing (parseMsg "agent" "? x ")),
-      testCase "tell and recv" $ do
-        let cfgA = mkSessCfg "agent-a" "sess-bcast"
-        cleanSessLogs cfgA
-
-        sessA <- sessionOpen cfgA
-        threadDelay 200_000
-
-        tell sessA "hello from session A"
-        threadDelay 500_000
-
-        msgs <- recv sessA
-        sessionClose sessA
-        threadDelay 100_000
-
-        assertBool "should have at least one message" (not (null msgs))
-        case head msgs of
-          Broadcast sender body -> do
-            assertEqual "sender" "agent-a" sender
-            assertEqual "body" "hello from session A" body
-          _ -> assertFailure "expected Broadcast",
-      testCase "ask and answer across two sessions" $ do
-        let cfgA = mkSessCfg "agent-a" "sess-ask"
-            cfgB = mkSessCfg "agent-b" "sess-ask"
-        cleanSessLogs cfgA
-
-        sessA <- sessionOpen cfgA
-        threadDelay 200_000
-
-        sessB <- sessionAttach cfgB sessA
-        threadDelay 200_000
-
-        resultMVar <- newEmptyMVar
-        _ <- forkIO $ do
-          reply <- ask sessA "should I refactor Baz.hs?"
-          putMVar resultMVar reply
-
-        qMsgs <- waitForMessages sessB 5_000_000
-        case qMsgs of
-          Nothing -> assertFailure "B timed out waiting for question"
-          Just msgs -> do
-            assertBool "B should see a question" (any isQuestion msgs)
-            case findQuestion msgs of
-              Nothing -> assertFailure "no Question in messages"
-              Just (Question _sender qid _body) -> do
-                answer sessB qid "yes, definitely refactor"
-
-        reply <- takeMVar resultMVar
-        assertEqual "answer body" "yes, definitely refactor" reply
-
-        sessionClose sessA
-        threadDelay 100_000,
-      testCase "two questions, interleaved answers" $ do
-        let cfgA = mkSessCfg "agent-a" "sess-multi"
-            cfgB = mkSessCfg "agent-b" "sess-multi"
-        cleanSessLogs cfgA
-
-        sessA <- sessionOpen cfgA
-        threadDelay 200_000
-
-        sessB <- sessionAttach cfgB sessA
-        threadDelay 200_000
-
-        rawSend sessA "? a.q1 question one"
-        rawSend sessA "? a.q2 question two"
-        threadDelay 300_000
-
-        bMsgs <- waitForMessagesN sessB 2 5_000_000
-        case bMsgs of
-          Nothing -> assertFailure "B timed out waiting for questions"
-          Just msgs -> do
-            let qs = filter isQuestion msgs
-            assertBool "should see at least two questions" (length qs >= 2)
-            forM_ qs $ \case
-              Question _ qid _ -> answer sessB qid "done"
-              _ -> pure ()
-
-        threadDelay 300_000
-        aMsgs <- recv sessA
-        let answers = filter isAnswer aMsgs
-        assertBool "A should see at least two answers" (length answers >= 2)
-
-        sessionClose sessA
-        threadDelay 100_000
-    ]
-  where
-    mkSessCfg name suffix =
-      SessionConfig
-        { sessChannel =
-            ChannelConfig
-              { chStdinPath = "/tmp/sess-test-stdin-" <> suffix,
-                chStdoutPath = "/tmp/sess-test-stdout-" <> suffix <> ".md",
-                chStderrPath = "/tmp/sess-test-stderr-" <> suffix <> ".md",
-                chName = name,
-                chWorkingDir = "."
-              },
-          sessName = name
-        }
-
-    cleanSessLogs cfg = do
-      let ch = sessChannel cfg
-      mapM_
-        (\p -> whenM (doesFileExist p) (removeFile p))
-        [chStdinPath ch, chStdoutPath ch, chStderrPath ch]
-      whenM (doesFileExist (chStdinPath ch)) (removeFile (chStdinPath ch))
-
-    isQuestion :: Msg -> Bool
-    isQuestion Question {} = True
-    isQuestion _ = False
-
-    isAnswer :: Msg -> Bool
-    isAnswer Answer {} = True
-    isAnswer _ = False
-
-    findQuestion :: [Msg] -> Maybe Msg
-    findQuestion = foldr (\m acc -> if isQuestion m then Just m else acc) Nothing
-
-    waitForMessages :: Session -> Int -> IO (Maybe [Msg])
-    waitForMessages sess timeoutUs = go 0 10000
-      where
-        go elapsed delay = do
-          msgs <- recv sess
-          if not (null msgs)
-            then pure (Just msgs)
-            else do
-              let elapsed' = elapsed + delay
-              if elapsed' >= timeoutUs
-                then pure Nothing
-                else do
-                  threadDelay delay
-                  let delay' = min 500000 (floor (fromIntegral delay * 1.5 :: Double))
-                  go elapsed' delay'
-
-    waitForMessagesN :: Session -> Int -> Int -> IO (Maybe [Msg])
-    waitForMessagesN sess n timeoutUs = go 0 10000 []
-      where
-        go elapsed delay acc = do
-          msgs <- recv sess
-          let acc' = acc ++ msgs
-          if length acc' >= n
-            then pure (Just acc')
-            else do
-              let elapsed' = elapsed + delay
-              if elapsed' >= timeoutUs
-                then pure Nothing
-                else do
-                  threadDelay delay
-                  let delay' = min 500000 (floor (fromIntegral delay * 1.5 :: Double))
-                  go elapsed' delay' acc'
 
 -- ---------------------------------------------------------------------------
 -- Shared helpers

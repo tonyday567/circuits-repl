@@ -24,7 +24,6 @@ module Circuit.Repl
     -- * Constructors
     replOpen,
     replOpenPty,
-    replOpenHermes,
     replOpenCustom,
     replOpenInject,
     replAttach,
@@ -37,25 +36,19 @@ import Control.Arrow (Kleisli (..))
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
 import Control.Exception (IOException, bracket, throwIO, try)
-import Control.Monad (guard, unless, void, forM_)
+import Control.Monad (unless, void, forM_)
 import Cursor qualified as Cur
-import Data.Aeson (Value (..), eitherDecodeStrict', encode, object, (.=))
-import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
-import Data.ByteString.Lazy qualified as LBS
 import Data.IORef
-import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Text.IO qualified as TIO
-import Data.Vector qualified as V
-import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory)
 import System.IO
   ( BufferMode (NoBuffering),
     IOMode (AppendMode, ReadMode, WriteMode),
-    SeekMode (AbsoluteSeek),
     hClose,
     hFlush,
     hSetBuffering,
@@ -63,18 +56,8 @@ import System.IO
     withFile,
   )
 import System.IO.Error (userError)
-import System.Posix.IO
-  ( OpenFileFlags (..),
-    OpenMode (ReadWrite),
-    closeFd,
-    defaultFileFlags,
-    openFd,
-    waitToSetLock,
-  )
-import System.Posix.IO qualified as PIO (LockRequest (..))
 import System.Posix.Process (getProcessID)
 import System.Posix.Pty (Pty, closePty, spawnWithPty, tryReadPty, writePty)
-import System.Posix.Types (FileMode)
 import System.Process
 import System.Timeout (timeout)
 import Prelude
@@ -195,21 +178,6 @@ replOpenPty cfg = do
   pure Repl { replCommit = commit, replEmit = emit, replClose = close }
 
 -- ---------------------------------------------------------------------------
--- Constructor: Hermes session JSON
--- ---------------------------------------------------------------------------
-
-replOpenHermes :: FilePath -> IO Repl
-replOpenHermes path = do
-  exists <- doesFileExist path
-  unless exists $ throwIO . userError $ "replOpenHermes: not found: " <> path
-  n <- hermesMessageCount path
-  idx <- newIORef n
-  let commit ts = hermesCommitPath path ts
-      emit   = hermesEmitPath path idx
-      close  = pure ()
-  pure Repl { replCommit = commit, replEmit = emit, replClose = close }
-
--- ---------------------------------------------------------------------------
 -- Constructor: custom (MusterRepl, tests)
 -- ---------------------------------------------------------------------------
 
@@ -311,77 +279,3 @@ logEmit logPath cursor lastP = do
         ([], _, Just p)          -> [p]
   pure (news <> partialNews)
 
--- ---------------------------------------------------------------------------
--- Hermes session-file backend (no Backend type — standalone functions)
--- ---------------------------------------------------------------------------
-
-withSessionLock :: FilePath -> IO a -> IO a
-withSessionLock path action = bracket acquire release (const action)
-  where
-    lockPath = path <> ".lock"
-    mode :: Maybe FileMode
-    mode = Just 0o644
-    acquire = do
-      fd <- openFd lockPath ReadWrite defaultFileFlags {creat = mode}
-      waitToSetLock fd (PIO.WriteLock, AbsoluteSeek, 0, 0)
-      pure fd
-    release fd = do
-      waitToSetLock fd (PIO.Unlock, AbsoluteSeek, 0, 0)
-      closeFd fd
-
-readSessionObject :: FilePath -> IO (KM.KeyMap Value)
-readSessionObject path = do
-  bs <- BS.readFile path
-  case eitherDecodeStrict' bs of
-    Left err -> throwIO . userError $ "hermes session decode: " <> err <> " (" <> path <> ")"
-    Right (Object o) -> pure o
-    Right _ -> throwIO . userError $ "hermes session: expected object (" <> path <> ")"
-
-writeSessionObject :: FilePath -> KM.KeyMap Value -> IO ()
-writeSessionObject path o = do
-  let tmp = path <> ".tmp"
-  LBS.writeFile tmp (encode (Object o))
-  renameFile tmp path
-
-hermesMessageCount :: FilePath -> IO Int
-hermesMessageCount path = withSessionLock path $ do
-  o <- readSessionObject path
-  pure $ case KM.lookup "messages" o of
-    Just (Array arr) -> V.length arr
-    _ -> 0
-
-hermesCommitPath :: FilePath -> [Text] -> IO ()
-hermesCommitPath path ts = withSessionLock path $ do
-  o <- readSessionObject path
-  let oldMsgs = case KM.lookup "messages" o of
-        Just (Array arr) -> arr
-        _ -> V.empty
-      added = V.fromList
-        [ object ["role" .= ("user" :: Text), "content" .= t] | t <- ts ]
-      newMsgs = oldMsgs <> added
-      o' = KM.insert "messages" (Array newMsgs) $
-           KM.insert "message_count" (Number (fromIntegral (V.length newMsgs))) o
-  writeSessionObject path o'
-
-hermesEmitPath :: FilePath -> IORef Int -> IO [Text]
-hermesEmitPath path idx = withSessionLock path $ do
-  o <- readSessionObject path
-  let msgs = case KM.lookup "messages" o of
-        Just (Array arr) -> arr
-        _ -> V.empty
-  i <- readIORef idx
-  let new  = V.drop i msgs
-      asst = mapMaybe assistantContent (V.toList new)
-  writeIORef idx (V.length msgs)
-  pure asst
-
-assistantContent :: Value -> Maybe Text
-assistantContent (Object m) = do
-  role <- case KM.lookup "role" m of
-    Just (String t) -> Just t
-    _ -> Nothing
-  guard (role == "assistant")
-  case KM.lookup "content" m of
-    Just (String t) | not (T.null (T.strip t)) -> Just t
-    _ -> Nothing
-assistantContent _ = Nothing

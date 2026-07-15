@@ -10,9 +10,8 @@ replEmit   :: Repl -> IO [Text]         -- read FROM the agent
 endsRepl   :: Repl -> (Commit IO [Text], Emit IO [Text])
 ```
 
-Backends: FIFO, PTY, inject, Hermes session JSON (`replOpenHermes`),
-MusterRepl via Comm (`openMusterRepl` / `attachMusterRepl` — identity in
-`ChannelConfig`, self-echo filtered on emit).
+Backends: FIFO, PTY, inject, MusterRepl via Comm (`openMusterRepl` /
+`attachMusterRepl` — identity in `ChannelConfig`, self-echo filtered on emit).
 
 Concrete transports (TCP/WebSocket, timers) live in **`circuits-io`**.
 

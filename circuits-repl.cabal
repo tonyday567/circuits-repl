@@ -9,12 +9,12 @@ author: Tony Day
 maintainer: tonyday567@gmail.com
 homepage: https://github.com/tonyday567/circuits-repl
 bug-reports: https://github.com/tonyday567/circuits-repl/issues
-synopsis: Repl primitive — commit/emit dual, turn, channel, session
+synopsis: Repl primitive — commit/emit dual, turn, channel
 description:
   Free-standing REPL library for the circuits ecosystem.
   Cursor over append-only logs; 'Circuit.Repl' free dual ends
   (commit/emit as @[Text] → [Text]@); turns; multi-agent channels
-  ('Circuit.Comm') and ask/answer sessions ('Circuit.Session').
+  ('Circuit.Comm').
   Concrete transports (sockets, timers) live in @circuits-io@.
 
 build-type: Simple
@@ -54,7 +54,6 @@ library
     Circuit.Repl.Agent
     Circuit.Repl.PingPong
     Circuit.Repl.Turn
-    Circuit.Session
 
   build-depends:
     aeson >=2.0 && <2.3,
@@ -182,18 +181,3 @@ executable dual-spike
     -threaded
     -rtsopts
 
-executable muster-local-agent
-  import: ghc-options-stanza
-  import: ghc2024-stanza
-  hs-source-dirs: examples
-  main-is: muster-local-agent.hs
-  build-depends:
-    base >=4.18 && <5,
-    circuits-repl,
-    directory >=1.3 && <1.4,
-    filepath >=1.4 && <1.6,
-    process >=1.6 && <1.7,
-    text >=2.0 && <3
-  ghc-options:
-    -threaded
-    -rtsopts
