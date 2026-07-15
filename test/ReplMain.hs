@@ -2,11 +2,16 @@
 
 module Main where
 
+import Circuit (Trace (..), run)
 import Circuit.Comm
-import Circuit.Int (AgentVerb (..), IntMorph (runIntMorph), agentRoster, causal, verbDelta)
+import Circuit.Int (AgentVerb (..), IntMorph (..), agentRoster, causal, comp, verbDelta)
+import Circuit.Poly (Mono, Morphism, applyLens, lens)
 import Circuit.Repl
 import Circuit.Repl.Agent (openAgentRosterRepl)
+import Circuit.Repl.PingPong (openPingPongRepl, pingPongLens)
+import Circuit.Repl.Turn (TurnConfig (..), defaultTurnConfig, turnUntil)
 import Circuit.Session
+import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar
 import Control.Monad (forM_, when)
@@ -34,7 +39,8 @@ main =
         musterReplTests,
         channelTests,
         sessionTests,
-        agentIntTests
+        agentIntTests,
+        pingPongIntTests
       ]
 
 -- ---------------------------------------------------------------------------
@@ -242,6 +248,49 @@ agentIntTests =
         e <- replEmit r
         e @?= ["0"]
         replClose r
+    ]
+
+-- ---------------------------------------------------------------------------
+-- BackendCustom ↔ causal/IN (concrete ping/pong turn)
+-- ---------------------------------------------------------------------------
+
+pingPongIntTests :: TestTree
+pingPongIntTests =
+  testGroup
+    "BackendCustom ping/pong ↔ causal/IN"
+    [ testCase "causal lens predicts immediate emit" $ do
+        runIntMorph (causal pingPongLens) (["ping"], []) @?= ([], ["pong"])
+        runIntMorph (causal pingPongLens) (["foo"], []) @?= ([], []),
+      testCase "BackendCustom Repl agrees with causal lens" $ do
+        r <- openPingPongRepl
+        replCommit r ["ping"]
+        e1 <- replEmit r
+        e1 @?= ["pong"]
+        replCommit r ["foo"]
+        e2 <- replEmit r
+        e2 @?= []
+        replClose r,
+      testCase "turnUntil ties the dual ends" $ do
+        r <- openPingPongRepl
+        m <- runKleisli (run (turnUntil defaultTurnConfig (T.isInfixOf "pong") r)) ["ping"]
+        m @?= Just ["pong"]
+        replClose r,
+      testCase "endsRepl exposes the box dual (Commit/Emit wires)" $ do
+        r <- openPingPongRepl
+        let (write, read_) = endsRepl r
+        _ <- pure (write, read_)
+        replClose r,
+      testCase "IntMorph composition via trace equals direct semantics" $ do
+        let ackLens = lens (const ["ack"] :: [Text] -> [Text]) (const (const []))
+            cz ::
+              forall x xd y yd.
+              Morphism (Mono x xd) (Mono y yd) ->
+              IntMorph (,) (Trace (,) (->)) x xd y yd
+            cz m = IntMorph (Arr (\(a, db) -> let (b, put) = applyLens m a in (put db, b)))
+            f = cz pingPongLens
+            g = cz ackLens
+            composed = g `comp` f
+        run (runIntMorph composed) (["ping"], []) @?= ([], ["ack"])
     ]
 
 backendTests :: TestTree

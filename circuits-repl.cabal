@@ -52,6 +52,7 @@ library
     Circuit.Comm
     Circuit.Repl
     Circuit.Repl.Agent
+    Circuit.Repl.PingPong
     Circuit.Repl.Turn
     Circuit.Session
 
