@@ -4,10 +4,10 @@ module Main where
 
 import Circuit (Trace (..), run)
 import Circuit.Comm
-import Circuit.Int (AgentVerb (..), IntMorph (..), agentRoster, causal, comp, verbDelta)
+import Circuit.Int (IntMorph (..), causal, comp)
 import Circuit.Poly (Mono, Morphism, applyLens, lens)
 import Circuit.Repl
-import Circuit.Repl.Agent (openAgentRosterRepl)
+import Circuit.Repl.Agent (AgentVerb (..), agentRoster, openAgentRosterRepl, verbDelta)
 import Circuit.Repl.PingPong (openPingPongRepl, pingPongLens)
 import Circuit.Repl.Turn (TurnConfig (..), defaultTurnConfig, turnUntil)
 import Circuit.Session
@@ -248,6 +248,22 @@ agentIntTests =
         e <- replEmit r
         e @?= ["0"]
         replClose r
+    , testCase "agentRoster lens semantics" $ do
+        let (out, put) = applyLens agentRoster 0
+        out @?= (0 :: Int)
+        put 1 @?= (1 :: Int)
+        put (-1) @?= (0 :: Int)
+    , testCase "causal agentRoster join/ack/quit" $ do
+        runIntMorph (causal agentRoster) (0 :: Int, verbDelta Join) @?= (1 :: Int, 0 :: Int)
+        runIntMorph (causal agentRoster) (2 :: Int, verbDelta Ack) @?= (2 :: Int, 2 :: Int)
+        runIntMorph (causal agentRoster) (1 :: Int, verbDelta Quit) @?= (0 :: Int, 1 :: Int)
+    , testCase "Trace comp equals lens Compose (trivial knot)" $ do
+        let cz m = IntMorph (Arr (\(a, db) -> let (b, put) = applyLens m a in (put db, b)))
+            composed = comp (cz agentRoster) (cz agentRoster)
+        run (runIntMorph composed) (0 :: Int, verbDelta Quit) @?= (0 :: Int, 0 :: Int)
+    , testCase "multi-verb path join→ack→quit restores zero" $ do
+        let step n v = fst (runIntMorph (causal agentRoster) (n, verbDelta v))
+        step (step (step 0 Join) Ack) Quit @?= (0 :: Int)
     ]
 
 -- ---------------------------------------------------------------------------
