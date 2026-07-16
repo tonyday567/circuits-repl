@@ -230,9 +230,9 @@ agentIntTests =
         replCommit r ["quit"]
         e3 <- replEmit r
         e3 @?= ["0"]
-        -- endsRepl dual still well-typed and live
-        let (write, read_) = endsRepl r
-        _ <- pure (write, read_)
+        -- openRepl free ends still well-typed and live
+        let (outR, inR) = openRepl r
+        _ <- pure (outR, inR)
         replClose r
     , testCase "unknown commit is a no-op" $ do
         r <- openAgentRosterRepl
@@ -283,10 +283,10 @@ pingPongIntTests =
         m <- runKleisli (run (turnUntil defaultTurnConfig (T.isInfixOf "pong") r)) ["ping"]
         m @?= Just ["pong"]
         replClose r,
-      testCase "endsRepl exposes the box dual (Commit/Emit wires)" $ do
+      testCase "openRepl exposes free In/Out ends" $ do
         r <- openPingPongRepl
-        let (write, read_) = endsRepl r
-        _ <- pure (write, read_)
+        let (outR, inR) = openRepl r
+        _ <- pure (outR, inR)
         replClose r,
       testCase "IntMorph composition via trace equals direct semantics" $ do
         let ackLens = lens (const ["ack"] :: [Text] -> [Text]) (const (const []))

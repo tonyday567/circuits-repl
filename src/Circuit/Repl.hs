@@ -1,25 +1,28 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | A 'Repl' is a persistent process /token/ with two free operational ends.
+-- | A 'Repl' is a process token. Free ends of its channel are 'In' / 'Out'.
 --
--- The handle is three closures (no dispatch table):
+-- The handle is three closures (ops convenience):
 --
 -- * 'replCommit' — write TO the process (harness feed)
 -- * 'replEmit' — read FROM the process (harness harvest)
 -- * 'replClose' — release the token
 --
--- No request–response contract, no timeouts, no claim tokens.
--- Transport (FIFO, PTY, inject) is captured at construction.
+-- = In ⊣ Out
 --
--- = Free ends vs unit-grounded view
+-- 'openRepl' is 'open' for that channel: free 'Out' / 'In' over
+-- @'Kleisli' IO@ at @'[Text]'@ (extrinsic, same pattern as 'openSTM').
+-- Unit plug recovers feed/harvest:
 --
--- Free channel ends in @circuits@ are 'Circuit.Ends.In' / 'Circuit.Ends.Out'.
--- 'endsRepl' exposes a /Trace view/ of the handle as unit-grounded
--- 'Circuit.Queue.Commit' / 'Circuit.Queue.Emit' wires
--- (@[Text] → ()@ / @() → [Text]@) — the same shapes as
--- 'Circuit.Ends.asCommit' / 'Circuit.Ends.asEmit', specialised to IO.
--- That view is optional: most code should use the three closures directly.
--- Turn boundaries ('Circuit.Repl.Turn.turnUntil') live /outside/ this module.
+-- @
+--   let (outR, inR) = openRepl r
+--       (outU, inU) = openK ()
+--   in ( runOut inR outU   -- [Text] → ()
+--      , runIn  outR inU   -- () → [Text]
+--      )
+-- @
+--
+-- Turn boundaries live outside this module.
 module Circuit.Repl
   ( -- * Handle
     Repl (..),
@@ -27,10 +30,8 @@ module Circuit.Repl
     replEmit,
     replClose,
 
-    -- * Trace view of the dual (unit-grounded)
-    endsRepl,
-    Commit,
-    Emit,
+    -- * Open (free ends)
+    openRepl,
 
     -- * Configuration
     ReplConfig (..),
@@ -45,9 +46,9 @@ module Circuit.Repl
   )
 where
 
-import Circuit.Queue (Commit, Emit, WireK)
-import Circuit.Trace (Trace (..))
-import Control.Arrow (Kleisli (..))
+import Circuit.Layer (run)
+import Circuit.Trace (In (..), Out (..), Trace (..), runIn)
+import Control.Arrow (Kleisli (..), runKleisli)
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
 import Control.Exception (IOException, bracket, throwIO, try)
@@ -105,11 +106,7 @@ defaultReplConfig = ReplConfig
 -- Handle — three closures, no dispatch
 -- ---------------------------------------------------------------------------
 
--- | Process token: free operational ends + close.
---
--- Orientation is relative to the process: commit feeds it, emit harvests it.
--- A runner may re-seat who is \"the process\" (polarity flip); the three
--- closures stay the API — see 'Circuit.Ends' mock 3.
+-- | Process token. Free ends of its text channel: 'openRepl'.
 data Repl = Repl
   { replCommit :: [Text] -> IO (),
     -- ^ Write TO the process (stdin / bus post / inject).
@@ -119,41 +116,38 @@ data Repl = Repl
     -- ^ Release handles / kill child / detach.
   }
 
--- | Trace /view/ of a 'Repl' as unit-grounded 'Commit' / 'Emit' wires.
+-- | 'open' for a 'Repl' — free 'Out' / 'In' on the process channel at '[Text]'.
 --
--- @
---   endsRepl r = ( Arr (Kleisli (replCommit r))   -- Commit IO [Text]  ≅ [Text] → ()
---                , Arr (Kleisli (\\() -> replEmit r)) -- Emit   IO [Text]  ≅ () → [Text]
---                )
--- @
---
--- These are /not/ free 'Circuit.Ends.In'/'Out' ends — they are the same
--- unit-grounded shapes as 'Circuit.Ends.asCommit' / 'Circuit.Ends.asEmit',
--- specialised to @'Kleisli' IO@ and carrier @'[Text]'@.  Use when composing
--- with other 'Trace' circuits; prefer 'replCommit'/'replEmit' at the app edge.
---
--- 'Commit' is contravariant in its input; 'Emit' is covariant in its output.
--- Turn boundary (timeout, prompt detector) lives outside this module
--- ('Circuit.Repl.Turn').
+-- Extrinsic ends (same pattern as 'openSTM'): both polarities share the
+-- process handle.  Unit plug with 'openK' @()@ recovers feed/harvest Trace wires.
 --
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run)
 -- >>> import Circuit.Classes ((>>>))
--- >>> import Circuit.Queue (Commit, Emit)
--- >>> import Circuit.Trace (Trace(..))
--- >>> import Control.Arrow (Kleisli(..), runKleisli)
+-- >>> import Circuit.Ends (openK)
+-- >>> import Circuit.Trace (Trace (..), runIn, runOut)
+-- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["emit: hello"], replClose = pure () }
--- >>> let (write, read) = endsRepl r
+-- >>> let (outR, inR) = openRepl r
+-- >>> let (outU, inU) = openK ()
 -- >>> let send = Arr (Kleisli (\() -> pure ["ping"]))
--- >>> let turn = send >>> write >>> read
+-- >>> let turn = send >>> runOut inR outU >>> runIn outR inU
 -- >>> runKleisli (run turn) ()
 -- ["emit: hello"]
-endsRepl :: Repl -> (Commit IO [Text], Emit IO [Text])
-endsRepl r =
-  ( Arr (Kleisli (replCommit r)),
-    Arr (Kleisli (\() -> replEmit r))
-  )
+openRepl :: Repl -> (Out (Kleisli IO) (,) [Text], In (Kleisli IO) (,) [Text])
+openRepl r = (outR, inR)
+  where
+    -- Out: harvest from the process (ignore opposing In for the read).
+    outR = Out $ \_ -> Arr (Kleisli $ \_ -> replEmit r)
+    -- In: feed the process, then continue through the opposing Out (openSTM shape).
+    inR =
+      In $ \o ->
+        Arr
+          ( Kleisli $ \ts -> do
+              replCommit r ts
+              runKleisli (run (runIn o inR)) ts
+          )
 
 -- ---------------------------------------------------------------------------
 -- Constructor: FIFO

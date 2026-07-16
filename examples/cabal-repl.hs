@@ -39,7 +39,7 @@ main = do
   -- Drain startup by tying emit to a local boundary (example only).
   _ <- emitUntil (T.isSuffixOf "ghci> ") 5_000_000 r
 
-  hPutStrLn stderr "endsRepl: free Commit + Emit in hand"
+  hPutStrLn stderr "openRepl: free In/Out ends in hand"
 
   -- Free commit, then a local turn circuit.
   replCommit r [":t id"]

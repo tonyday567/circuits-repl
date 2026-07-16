@@ -4,10 +4,11 @@ Repl primitive for the circuits ecosystem: **commit / emit dual**, turn,
 channel, session — plus the shared `Cursor` over append-only logs.
 
 ```haskell
--- dual ends (same object type — Queue dual)
+-- process token + free In/Out (open)
 replCommit :: Repl -> [Text] -> IO ()   -- write TO the agent
 replEmit   :: Repl -> IO [Text]         -- read FROM the agent
-endsRepl   :: Repl -> (Commit IO [Text], Emit IO [Text])
+openRepl   :: Repl -> (Out (Kleisli IO) (,) [Text], In (Kleisli IO) (,) [Text])
+-- unit plug: runOut inR outU / runIn outR inU  with openK ()
 ```
 
 Backends: FIFO, PTY, inject, MusterRepl via Comm (`openMusterRepl` /
