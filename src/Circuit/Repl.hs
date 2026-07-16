@@ -1,10 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | A 'Repl' is a persistent process handle with free dual ends.
+-- | A 'Repl' is a persistent process /token/ with two free operational ends.
 --
--- 'replCommit' writes TO the process. 'replEmit' reads FROM it.
+-- The handle is three closures (no dispatch table):
+--
+-- * 'replCommit' — write TO the process (harness feed)
+-- * 'replEmit' — read FROM the process (harness harvest)
+-- * 'replClose' — release the token
+--
 -- No request–response contract, no timeouts, no claim tokens.
--- Transport (FIFO, PTY, WebSocket, inject) is captured at construction.
+-- Transport (FIFO, PTY, inject) is captured at construction.
+--
+-- = Free ends vs unit-grounded view
+--
+-- Free channel ends in @circuits@ are 'Circuit.Ends.In' / 'Circuit.Ends.Out'.
+-- 'endsRepl' exposes a /Trace view/ of the handle as unit-grounded
+-- 'Circuit.Queue.Commit' / 'Circuit.Queue.Emit' wires
+-- (@[Text] → ()@ / @() → [Text]@) — the same shapes as
+-- 'Circuit.Ends.asCommit' / 'Circuit.Ends.asEmit', specialised to IO.
+-- That view is optional: most code should use the three closures directly.
+-- Turn boundaries ('Circuit.Repl.Turn.turnUntil') live /outside/ this module.
 module Circuit.Repl
   ( -- * Handle
     Repl (..),
@@ -12,7 +27,7 @@ module Circuit.Repl
     replEmit,
     replClose,
 
-    -- * Categorical dual
+    -- * Trace view of the dual (unit-grounded)
     endsRepl,
     Commit,
     Emit,
@@ -90,17 +105,37 @@ defaultReplConfig = ReplConfig
 -- Handle — three closures, no dispatch
 -- ---------------------------------------------------------------------------
 
+-- | Process token: free operational ends + close.
+--
+-- Orientation is relative to the process: commit feeds it, emit harvests it.
+-- A runner may re-seat who is \"the process\" (polarity flip); the three
+-- closures stay the API — see 'Circuit.Ends' mock 3.
 data Repl = Repl
   { replCommit :: [Text] -> IO (),
+    -- ^ Write TO the process (stdin / bus post / inject).
     replEmit   :: IO [Text],
+    -- ^ Read FROM the process (stdout log / bus watch).
     replClose  :: IO ()
+    -- ^ Release handles / kill child / detach.
   }
 
--- | Expose the dual as 'Circuit.Queue.Commit' and 'Emit' wires.
+-- | Trace /view/ of a 'Repl' as unit-grounded 'Commit' / 'Emit' wires.
+--
+-- @
+--   endsRepl r = ( Arr (Kleisli (replCommit r))   -- Commit IO [Text]  ≅ [Text] → ()
+--                , Arr (Kleisli (\\() -> replEmit r)) -- Emit   IO [Text]  ≅ () → [Text]
+--                )
+-- @
+--
+-- These are /not/ free 'Circuit.Ends.In'/'Out' ends — they are the same
+-- unit-grounded shapes as 'Circuit.Ends.asCommit' / 'Circuit.Ends.asEmit',
+-- specialised to @'Kleisli' IO@ and carrier @'[Text]'@.  Use when composing
+-- with other 'Trace' circuits; prefer 'replCommit'/'replEmit' at the app edge.
 --
 -- 'Commit' is contravariant in its input; 'Emit' is covariant in its output.
--- Compose freely.  A turn boundary circuit (timeout, prompt detector) lives
--- outside this module.
+-- Turn boundary (timeout, prompt detector) lives outside this module
+-- ('Circuit.Repl.Turn').
+--
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run)
