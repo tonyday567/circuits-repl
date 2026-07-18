@@ -33,6 +33,7 @@ module Circuit.Repl
     -- * Open (free ends)
     openRepl,
     endsRepl,
+    replEnds,
 
     -- * Configuration
     ReplConfig (..),
@@ -49,6 +50,7 @@ where
 
 import Circuit.Ends (openK)
 import Circuit.Layer (run)
+import Circuit.Monoidal (Tensor (..))
 import Circuit.Queue (Commit, Emit)
 import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
 import Control.Arrow (Kleisli (..), runKleisli)
@@ -177,6 +179,39 @@ endsRepl r = (runOut inR outU, runIn outR inU)
   where
     (outR, inR) = openRepl r
     (outU, inU) = openK ()
+
+-- | Box view of a 'Repl': unit-plugged 'In'/'Out' packaged with 'par'.
+--
+-- = Conjoint / companion reconciliation
+--
+-- Free ends of a channel are the proarrow equipment duals:
+--
+-- * 'Out' — companion of @id@ (covariant harvest)
+-- * 'In'  — conjoint of @id@ (contravariant feed)
+-- * 'open' / 'close' — unit @η@ / counit @ε@ of @In ⊣ Out@
+--
+-- A 'Repl' holds that free dual extrinsically ('openRepl'). Unit-plugging
+-- both legs yields boring ports ('endsRepl'): commit @a → ()@, emit
+-- @() → a@. Packaging those with monoidal 'par' is the dual-port / Box
+-- shape — one morphism for wiring, not a second theory and not a store
+-- of free halves:
+--
+-- @
+--   replEnds r = par c e
+--     where (c, e) = endsRepl r
+--     :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+-- @
+--
+-- Free dual stays primary for async feed ‖ harvest. 'replEnds' is the
+-- G2 boring view when a circuit needs @(a, ()) → ((), b)@ in one step.
+--
+-- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hi"], replClose = pure () }
+-- >>> :t replEnds r
+-- replEnds r :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+replEnds :: Repl -> Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+replEnds r = par c e
+  where
+    (c, e) = endsRepl r
 
 -- ---------------------------------------------------------------------------
 -- Constructor: FIFO
