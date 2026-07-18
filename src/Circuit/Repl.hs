@@ -121,10 +121,20 @@ data Repl = Repl
     -- ^ Release handles / kill child / detach.
   }
 
--- | 'open' for a 'Repl' — free 'Out' / 'In' on the process channel at '[Text]'.
+-- | Free dual store for a 'Repl': two end *handles* (Haskell pair of values).
 --
--- Extrinsic ends (same pattern as 'openSTM'): both polarities share the
--- process handle.  Unit plug with 'openK' @()@ recovers feed/harvest Trace wires.
+-- Not a monoidal object. The @(,)@ in the return type is only how we hand
+-- you two independent ends for async feed ‖ harvest. Dual *channels* enter
+-- a circuit with 'par' (see 'replEnds'), not by treating this pair as tensor.
+--
+-- Same extrinsic pattern as 'open' / 'openSTM': both polarities share the
+-- process. Unit-plug with 'openK' @()@ for boring ports ('endsRepl').
+--
+-- Clarity ladder (no extra structure):
+--
+-- * 'openRepl' — free dual store (handles)
+-- * 'endsRepl' — unit plug each → Commit / Emit (still handles)
+-- * 'replEnds' — 'par' of those → one Trace morphism (wiring)
 --
 -- $setup
 -- >>> :set -XOverloadedStrings
@@ -154,14 +164,10 @@ openRepl r = (outR, inR)
               runKleisli (run (runIn o inR)) ts
           )
 
--- | Boring projection of a 'Repl' into unit-plugged 'Commit' / 'Emit' wires.
+-- | Unit-plug free ends: boring 'Commit' / 'Emit' handles (still a pair of values).
 --
--- This is the L5 view from the In/Out ladder: the 'Repl' fields remain
--- free operational closures, but 'endsRepl' exposes them as the boring
--- @Commit@ (@a → ()@) and @Emit@ (@() → a@) port shapes. The free pair is
--- still primary; use 'openRepl' if you need independent async access.
---
--- E8 — 'endsRepl' is the G2 boring projection; 'openRepl' is the free dual.
+-- @Commit@ is @a → ()@, @Emit@ is @() → a@. Not monoidal packaging — for that
+-- use 'replEnds' ('par'). Free dual remains 'openRepl'.
 --
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hello"], replClose = pure () }
 -- >>> :t openRepl r
@@ -180,30 +186,19 @@ endsRepl r = (runOut inR outU, runIn outR inU)
     (outR, inR) = openRepl r
     (outU, inU) = openK ()
 
--- | Box view of a 'Repl': unit-plugged 'In'/'Out' packaged with 'par'.
+-- | Wire the dual ports with 'par': one Trace morphism (Box / dual-port view).
 --
--- = Conjoint / companion reconciliation
---
--- Free ends of a channel are the proarrow equipment duals:
---
--- * 'Out' — companion of @id@ (covariant harvest)
--- * 'In'  — conjoint of @id@ (contravariant feed)
--- * 'open' / 'close' — unit @η@ / counit @ε@ of @In ⊣ Out@
---
--- A 'Repl' holds that free dual extrinsically ('openRepl'). Unit-plugging
--- both legs yields boring ports ('endsRepl'): commit @a → ()@, emit
--- @() → a@. Packaging those with monoidal 'par' is the dual-port / Box
--- shape — one morphism for wiring, not a second theory and not a store
--- of free halves:
+-- Conjoint / companion: 'Out' companion, 'In' conjoint, 'open'/'close' = η/ε.
+-- 'openRepl' holds free ends; 'endsRepl' unit-plugs; this packages with 'par':
 --
 -- @
---   replEnds r = par c e
---     where (c, e) = endsRepl r
---     :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+--   replEnds r = par c e   where (c, e) = endsRepl r
+--   :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
 -- @
 --
--- Free dual stays primary for async feed ‖ harvest. 'replEnds' is the
--- G2 boring view when a circuit needs @(a, ()) → ((), b)@ in one step.
+-- Prefer this over advertising @(Out, In)@ as a monoidal object. Multi-channel
+-- (e.g. stdout ‖ stderr) is nested 'par' of unit-plugged halves, not a bigger
+-- product type. No extra structure beyond free store + 'par'.
 --
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hi"], replClose = pure () }
 -- >>> :t replEnds r
