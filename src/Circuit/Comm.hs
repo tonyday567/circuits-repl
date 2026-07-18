@@ -171,6 +171,7 @@ channelOpen cfg = do
   writeH <-
     openFile (chStdinPath cfg) WriteMode
       `onException` replClose repl
+  hSetEncoding writeH utf8
   hSetBuffering writeH NoBuffering
   pure $ Channel repl cfg writeH
 
@@ -183,6 +184,7 @@ channelAttach :: ChannelConfig -> IO Channel
 channelAttach cfg = do
   repl <- replAttach (toReplConfig cfg)
   writeH <- openFile (chStdinPath cfg) WriteMode
+  hSetEncoding writeH utf8
   hSetBuffering writeH NoBuffering
   pure $ Channel repl cfg writeH
 

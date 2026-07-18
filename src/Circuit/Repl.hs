@@ -32,6 +32,7 @@ module Circuit.Repl
 
     -- * Open (free ends)
     openRepl,
+    endsRepl,
 
     -- * Configuration
     ReplConfig (..),
@@ -46,8 +47,10 @@ module Circuit.Repl
   )
 where
 
+import Circuit.Ends (openK)
 import Circuit.Layer (run)
-import Circuit.Trace (In (..), Out (..), Trace (..), runIn)
+import Circuit.Queue (Commit, Emit)
+import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
 import Control.Arrow (Kleisli (..), runKleisli)
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
@@ -123,7 +126,7 @@ data Repl = Repl
 --
 -- $setup
 -- >>> :set -XOverloadedStrings
--- >>> import Circuit (run)
+-- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
 -- >>> import Circuit.Ends (openK)
 -- >>> import Circuit.Trace (Trace (..), runIn, runOut)
@@ -148,6 +151,32 @@ openRepl r = (outR, inR)
               replCommit r ts
               runKleisli (run (runIn o inR)) ts
           )
+
+-- | Boring projection of a 'Repl' into unit-plugged 'Commit' / 'Emit' wires.
+--
+-- This is the L5 view from the In/Out ladder: the 'Repl' fields remain
+-- free operational closures, but 'endsRepl' exposes them as the boring
+-- @Commit@ (@a → ()@) and @Emit@ (@() → a@) port shapes. The free pair is
+-- still primary; use 'openRepl' if you need independent async access.
+--
+-- E8 — 'endsRepl' is the G2 boring projection; 'openRepl' is the free dual.
+--
+-- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hello"], replClose = pure () }
+-- >>> :t openRepl r
+-- openRepl r
+--   :: (Out (Kleisli IO) (,) [Text], In (Kleisli IO) (,) [Text])
+-- >>> let (commit, emit) = endsRepl r
+-- >>> :t commit
+-- commit :: Commit IO [Text]
+-- >>> :t emit
+-- emit :: Emit IO [Text]
+-- >>> :t par commit emit
+-- par commit emit :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+endsRepl :: Repl -> (Commit IO [Text], Emit IO [Text])
+endsRepl r = (runOut inR outU, runIn outR inU)
+  where
+    (outR, inR) = openRepl r
+    (outU, inU) = openK ()
 
 -- ---------------------------------------------------------------------------
 -- Constructor: FIFO
