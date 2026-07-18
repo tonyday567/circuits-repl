@@ -35,6 +35,13 @@ module Circuit.Repl
     endsRepl,
     replEnds,
 
+    -- * Process ports (stdin / stdout / stderr)
+    ProcessPorts (..),
+    openProcessPorts,
+    attachProcessPorts,
+    portsEnds,
+    replFromPortsStdout,
+
     -- * Configuration
     ReplConfig (..),
     defaultReplConfig,
@@ -82,6 +89,17 @@ import System.Posix.Pty (Pty, closePty, spawnWithPty, tryReadPty, writePty)
 import System.Process
 import System.Timeout (timeout)
 import Prelude
+
+-- $setup
+-- >>> :set -XOverloadedStrings
+-- >>> import Circuit (run, par)
+-- >>> import Circuit.Classes ((>>>))
+-- >>> import Circuit.Ends (openK)
+-- >>> import Circuit.Queue (Commit, Emit)
+-- >>> import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
+-- >>> import Control.Arrow (Kleisli (..), runKleisli)
+-- >>> import Data.IORef
+-- >>> import Data.Text (Text)
 
 -- ---------------------------------------------------------------------------
 -- Configuration
@@ -141,8 +159,9 @@ data Repl = Repl
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
 -- >>> import Circuit.Ends (openK)
--- >>> import Circuit.Trace (Trace (..), runIn, runOut)
+-- >>> import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
+-- >>> import Data.Text (Text)
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["emit: hello"], replClose = pure () }
 -- >>> let (outR, inR) = openRepl r
 -- >>> let (outU, inU) = openK ()
@@ -170,16 +189,11 @@ openRepl r = (outR, inR)
 -- use 'replEnds' ('par'). Free dual remains 'openRepl'.
 --
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hello"], replClose = pure () }
--- >>> :t openRepl r
--- openRepl r
---   :: (Out (Kleisli IO) (,) [Text], In (Kleisli IO) (,) [Text])
+-- >>> let _openR = openRepl r :: (Out (Kleisli IO) (,) [Text], In (Kleisli IO) (,) [Text])
 -- >>> let (commit, emit) = endsRepl r
--- >>> :t commit
--- commit :: Commit IO [Text]
--- >>> :t emit
--- emit :: Emit IO [Text]
--- >>> :t par commit emit
--- par commit emit :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+-- >>> let _commit = commit :: Commit IO [Text]
+-- >>> let _emit = emit :: Emit IO [Text]
+-- >>> let _wire = par commit emit :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
 endsRepl :: Repl -> (Commit IO [Text], Emit IO [Text])
 endsRepl r = (runOut inR outU, runIn outR inU)
   where
@@ -201,44 +215,163 @@ endsRepl r = (runOut inR outU, runIn outR inU)
 -- product type. No extra structure beyond free store + 'par'.
 --
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hi"], replClose = pure () }
--- >>> :t replEnds r
--- replEnds r :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+-- >>> let _wire = replEnds r :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
 replEnds :: Repl -> Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
 replEnds r = par c e
   where
     (c, e) = endsRepl r
 
 -- ---------------------------------------------------------------------------
--- Constructor: FIFO
+-- Process ports: stdin / stdout / stderr
 -- ---------------------------------------------------------------------------
 
-replOpen :: ReplConfig -> IO Repl
-replOpen cfg = do
+-- | A process token with three free dual seats: stdin commit, stdout emit,
+-- and stderr emit. This is the splayed / store view: @(peIn, (peOut, peErr))@
+-- as independent ends, not a monoidal object.
+--
+-- The monoidal / wire view is 'portsEnds': @par peIn (par peOut peErr)@.
+--
+-- $setup
+-- >>> :set -XOverloadedStrings
+-- >>> import Circuit (run, par)
+-- >>> import Circuit.Classes ((>>>))
+-- >>> import Circuit.Ends (openK)
+-- >>> import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
+-- >>> import Control.Arrow (Kleisli (..), runKleisli)
+-- >>> import Data.Text (Text)
+data ProcessPorts a b c = ProcessPorts
+  { peIn    :: In  (Kleisli IO) (,) a
+  -- ^ Write TO the process (stdin / commit).
+  , peOut   :: Out (Kleisli IO) (,) b
+  -- ^ Read FROM the process stdout.
+  , peErr   :: Out (Kleisli IO) (,) c
+  -- ^ Read FROM the process stderr.
+  , peClose :: IO ()
+  -- ^ Release handles / kill child / detach.
+  }
+
+-- | Open a process with three line ports: stdin FIFO, stdout log, stderr log.
+--
+-- Spawns the configured command with stdin/stdout/stderr redirected, and
+-- returns the three free ends plus a close action. Stdout and stderr each
+-- have their own cursor on their respective log files.
+openProcessPorts :: ReplConfig -> IO (ProcessPorts [Text] [Text] [Text])
+openProcessPorts cfg = do
   ensureFifo (replStdinPath cfg)
   stdoutH <- openFile (replStdoutPath cfg) AppendMode
   stderrH <- openFile (replStderrPath cfg) AppendMode
   hSetBuffering stdoutH NoBuffering
   hSetBuffering stderrH NoBuffering
   stdinH <- openFile (replStdinPath cfg) ReadMode
-  let procSpec = (proc (replCommand cfg) (replArgs cfg))
-        { cwd     = Just (replWorkingDir cfg),
-          std_in  = UseHandle stdinH,
-          std_out = UseHandle stdoutH,
-          std_err = UseHandle stderrH
-        }
+  let procSpec =
+        (proc (replCommand cfg) (replArgs cfg))
+          { cwd = Just (replWorkingDir cfg),
+            std_in = UseHandle stdinH,
+            std_out = UseHandle stdoutH,
+            std_err = UseHandle stderrH
+          }
   (_, _, _, ph) <- createProcess procSpec
-  hClose stdinH; hClose stdoutH; hClose stderrH
+  hClose stdinH
+  hClose stdoutH
+  hClose stderrH
 
-  cursor <- Cur.newFile (cursorPath cfg)
-  Cur.set cursor 0
-  lastP  <- newIORef Nothing
+  stdoutCursor <- Cur.newFile (cursorPath cfg)
+  Cur.set stdoutCursor 0
+  stderrCursor <- Cur.newFile (stderrCursorPath cfg)
+  Cur.set stderrCursor 0
+  lastOutP <- newIORef Nothing
+  lastErrP <- newIORef Nothing
 
   let commit ts = mapM_ (\t -> withFile (replStdinPath cfg) WriteMode $ \h -> do
-        TIO.hPutStrLn h t; hFlush h) ts
-      emit = logEmit (replStdoutPath cfg) cursor lastP
+        TIO.hPutStrLn h t
+        hFlush h) ts
+      peIn_ = In $ \o -> Arr (Kleisli $ \ts -> commit ts >> runKleisli (run (runIn o peIn_)) ts)
+      peOut_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStdoutPath cfg) stdoutCursor lastOutP)
+      peErr_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStderrPath cfg) stderrCursor lastErrP)
       close = terminateProcess ph
 
-  pure Repl { replCommit = commit, replEmit = emit, replClose = close }
+  pure ProcessPorts { peIn = peIn_, peOut = peOut_, peErr = peErr_, peClose = close }
+
+-- | Attach to an existing process's logs without spawning.
+--
+-- Cursors start at the current end of both logs so the next poll only sees
+-- future output. Each attachment gets its own cursor files (PID-suffix) so
+-- multiple observers on the same logs do not interfere.
+attachProcessPorts :: ReplConfig -> IO (ProcessPorts [Text] [Text] [Text])
+attachProcessPorts cfg = do
+  contentOut <- readLogContent (replStdoutPath cfg)
+  contentErr <- readLogContent (replStderrPath cfg)
+  stdoutCursorFile <- attachCursorPath (replStdoutPath cfg)
+  stderrCursorFile <- attachCursorPath (replStderrPath cfg)
+  stdoutCursor <- Cur.newFile stdoutCursorFile
+  Cur.seekEnd stdoutCursor (fst (splitComplete contentOut))
+  stderrCursor <- Cur.newFile stderrCursorFile
+  Cur.seekEnd stderrCursor (fst (splitComplete contentErr))
+  lastOutP <- newIORef Nothing
+  lastErrP <- newIORef Nothing
+
+  let commit ts = mapM_ (\t -> withFile (replStdinPath cfg) WriteMode $ \h -> do
+        TIO.hPutStrLn h t
+        hFlush h) ts
+      peIn_ = In $ \o -> Arr (Kleisli $ \ts -> commit ts >> runKleisli (run (runIn o peIn_)) ts)
+      peOut_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStdoutPath cfg) stdoutCursor lastOutP)
+      peErr_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStderrPath cfg) stderrCursor lastErrP)
+      close = pure () -- attach does not own the process
+
+  pure ProcessPorts { peIn = peIn_, peOut = peOut_, peErr = peErr_, peClose = close }
+
+-- | The wire view of 'ProcessPorts': one nested 'par' morphism.
+--
+-- Store @(peIn, (peOut, peErr))@ becomes
+-- @par commit (par out err) :: Trace (,) (Kleisli IO) (a, ((), ())) ((), (b, c))@.
+--
+-- Each free end is unit-plugged with its own 'openK ()' pair; the three
+-- unit plugs are independent channels.
+--
+-- >>> let pp = ProcessPorts { peIn = undefined, peOut = undefined, peErr = undefined, peClose = pure () }
+-- >>> let _wire = portsEnds pp :: Trace (,) (Kleisli IO) ([Text], ((), ())) ((), ([Text], [Text]))
+--
+-- Round-trip doctest (no process spawn): commit writes a shared cell; the
+-- nested par reads it back through both @Out@ seats.
+--
+-- >>> ref <- newIORef ([] :: [Text])
+-- >>> let commit = In $ \o -> Arr (Kleisli $ \ts -> writeIORef ref ts >> runKleisli (run (runIn o commit)) ts)
+-- >>> let emit   = Out $ \_ -> Arr (Kleisli $ \_ -> readIORef ref)
+-- >>> let pp' = ProcessPorts { peIn = commit, peOut = emit, peErr = emit, peClose = pure () }
+-- >>> runKleisli (run (portsEnds pp')) (["hello"], ((), ()))
+-- ((),(["hello"],["hello"]))
+portsEnds :: ProcessPorts a b c -> Trace (,) (Kleisli IO) (a, ((), ())) ((), (b, c))
+portsEnds pp = par commit (par out err)
+  where
+    commit = runOut (peIn pp) outUIn
+    out    = runIn (peOut pp) inUOut
+    err    = runIn (peErr pp) inUErr
+    (outUIn, _) = openK ()
+    (_, inUOut) = openK ()
+    (_, inUErr) = openK ()
+
+-- | The old stdout-only 'Repl' view, extracted from 'ProcessPorts'.
+--
+-- This keeps 'replOpen' / 'replAttach' backward compatible: they build
+-- 'ProcessPorts' internally and return this wrapper.
+replFromPortsStdout :: ProcessPorts [Text] [Text] c -> Repl
+replFromPortsStdout pp =
+  Repl
+    { replCommit = \ts -> runKleisli (run commit) ts,
+      replEmit = runKleisli (run out) (),
+      replClose = peClose pp
+    }
+  where
+    commit = runOut (peIn pp) outU
+    out    = runIn (peOut pp) inU
+    (outU, inU) = openK ()
+
+-- ---------------------------------------------------------------------------
+-- Constructor: FIFO
+-- ---------------------------------------------------------------------------
+
+replOpen :: ReplConfig -> IO Repl
+replOpen cfg = replFromPortsStdout <$> openProcessPorts cfg
 
 -- ---------------------------------------------------------------------------
 -- Constructor: PTY
@@ -293,20 +426,7 @@ replOpenInject cfg inject = do
 -- ---------------------------------------------------------------------------
 
 replAttach :: ReplConfig -> IO Repl
-replAttach cfg = do
-  content <- readLogContent (replStdoutPath cfg)
-  let (complete, _) = splitComplete content
-  path    <- attachCursorPath cfg
-  cursor  <- Cur.newFile path
-  Cur.seekEnd cursor complete
-  lastP   <- newIORef Nothing
-
-  let commit ts = mapM_ (\t -> withFile (replStdinPath cfg) WriteMode $ \h -> do
-        TIO.hPutStrLn h t; hFlush h) ts
-      emit  = logEmit (replStdoutPath cfg) cursor lastP
-      close = pure ()  -- attach doesn't own the process
-
-  pure Repl { replCommit = commit, replEmit = emit, replClose = close }
+replAttach cfg = replFromPortsStdout <$> attachProcessPorts cfg
 
 -- ---------------------------------------------------------------------------
 -- Shared helpers
@@ -320,10 +440,13 @@ ensureFifo path = do
 cursorPath :: ReplConfig -> FilePath
 cursorPath cfg = replStdoutPath cfg <> ".cursor"
 
-attachCursorPath :: ReplConfig -> IO FilePath
-attachCursorPath cfg = do
+stderrCursorPath :: ReplConfig -> FilePath
+stderrCursorPath cfg = replStderrPath cfg <> ".cursor"
+
+attachCursorPath :: FilePath -> IO FilePath
+attachCursorPath logPath = do
   pid <- getProcessID
-  pure (replStdoutPath cfg <> ".cursor-attach-" <> show pid)
+  pure (logPath <> ".cursor-attach-" <> show pid)
 
 pumpPtyToLog :: Pty -> FilePath -> IO ()
 pumpPtyToLog pty logPath = go

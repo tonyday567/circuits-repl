@@ -23,14 +23,15 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import System.Environment (getArgs)
-import System.IO (hFlush, stdout)
+import System.IO (hFlush, stderr, stdout)
 
 data MockConfig = MockConfig
   { prompt :: Text,
     startupNoise :: [Text],
     responseDelayMs :: Int,
     extraNoise :: Bool,
-    hangingPrompt :: Bool -- if True, print prompt with putStr (no \n) to test partial-line reading
+    hangingPrompt :: Bool, -- if True, print prompt with putStr (no \n) to test partial-line reading
+    echoStderr :: Bool -- if True, also echo received commands to stderr
   }
 
 defaultConfig :: MockConfig
@@ -44,7 +45,8 @@ defaultConfig =
         ],
       responseDelayMs = 50,
       extraNoise = True,
-      hangingPrompt = False
+      hangingPrompt = False,
+      echoStderr = False
     }
 
 parseArgs :: [String] -> MockConfig
@@ -58,6 +60,7 @@ parseArgs = foldr go defaultConfig
             _ -> cfg
       | "--no-extra-noise" == t = cfg {extraNoise = False}
       | "--hanging-prompt" == t = cfg {hangingPrompt = True}
+      | "--echo-stderr" == t = cfg {echoStderr = True}
       | otherwise = cfg
       where
         t = T.pack arg
@@ -105,6 +108,9 @@ loop cfg counter = do
 
     when (extraNoise cfg) $
       TIO.putStrLn "  [mock noise: done]"
+
+    when (echoStderr cfg) $
+      TIO.hPutStrLn stderr ("stderr: " <> trimmed)
 
   if hangingPrompt cfg
     then TIO.putStr (prompt cfg)

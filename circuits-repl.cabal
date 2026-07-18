@@ -150,11 +150,91 @@ executable cabal-repl-real
     -threaded
     -rtsopts
 
+executable cabal-repl-split
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: cabal-repl-split.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits >=0.1.0.0 && <0.3,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
 executable agent-bridge
   import: ghc-options-stanza
   import: ghc2024-stanza
   hs-source-dirs: examples
   main-is: agent-bridge.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable cabal-repl-explore
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: cabal-repl-explore.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits >=0.1.0.0 && <0.3,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable agent-repl-loop
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: agent-repl-loop.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits >=0.1.0.0 && <0.3,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable cabal-repl-muster
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: cabal-repl-muster.hs
+  build-depends:
+    base >=4.18 && <5,
+    circuits >=0.1.0.0 && <0.3,
+    circuits-repl,
+    directory >=1.3 && <1.4,
+    filepath >=1.4 && <1.6,
+    process >=1.6 && <1.7,
+    text >=2.0 && <3
+  ghc-options:
+    -threaded
+    -rtsopts
+
+executable agent-repl-follower
+  import: ghc-options-stanza
+  import: ghc2024-stanza
+  hs-source-dirs: examples
+  main-is: agent-repl-follower.hs
   build-depends:
     base >=4.18 && <5,
     circuits-repl,

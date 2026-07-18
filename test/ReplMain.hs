@@ -4,12 +4,14 @@ module Main where
 
 import Circuit (Trace (..), run)
 import Circuit.Comm
+import Circuit.Ends (openK)
 import Circuit.Int (IntMorph (..), causal, comp)
 import Circuit.Poly (Mono, Morphism, applyLens, lens)
 import Circuit.Repl
 import Circuit.Repl.Agent (AgentVerb (..), agentRoster, openAgentRosterRepl, verbDelta)
 import Circuit.Repl.PingPong (openPingPongRepl, pingPongLens)
 import Circuit.Repl.Turn (TurnConfig (..), defaultTurnConfig, turnUntil)
+import Circuit.Trace (runIn)
 import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Concurrent (threadDelay)
 import Control.Monad (forM_, when)
@@ -28,6 +30,7 @@ main =
     testGroup
       "circuits-repl"
       [ replTests,
+        processPortsTests,
         backendTests,
         musterReplTests,
         channelTests,
@@ -199,6 +202,108 @@ replTests =
           replStderrPath cfg,
           replStdoutPath cfg <> ".cursor"
         ]
+
+-- ---------------------------------------------------------------------------
+-- ProcessPorts: stdin / stdout / stderr round-trip
+-- ---------------------------------------------------------------------------
+
+processPortsTests :: TestTree
+processPortsTests =
+  testGroup
+    "ProcessPorts std streams"
+    [ testCase "stdout and stderr stay separate" $ do
+        let cfg =
+              (baseCfg ["--prompt=mock> ", "--delay=10", "--no-extra-noise", "--echo-stderr"])
+                { replStdinPath = "/tmp/circuits-io-pp-in-1",
+                  replStdoutPath = "/tmp/circuits-io-pp-out-1.md",
+                  replStderrPath = "/tmp/circuits-io-pp-err-1.md"
+                }
+        cleanLogs cfg
+        pp <- openProcessPorts cfg
+        let r = replFromPortsStdout pp
+        threadDelay 500_000
+
+        _ <- pollUntil (replEmit r) (T.isSuffixOf "mock> ") 5_000_000
+        replCommit r ["hello"]
+        mOut <- pollUntil (replEmit r) (T.isSuffixOf "mock> ") 10_000_000
+        mErr <- pollUntil (emitErr pp) (T.isInfixOf "stderr:") 10_000_000
+
+        peClose pp
+        threadDelay 100_000
+
+        case (mOut, mErr) of
+          (Nothing, _) -> assertFailure "stdout timed out"
+          (_, Nothing) -> assertFailure "stderr timed out"
+          (Just outLines, Just errLines) -> do
+            let combinedOut = T.unlines outLines
+            assertBool "stdout has echo" ("echo: hello" `T.isInfixOf` combinedOut)
+            assertBool "stdout does not contain stderr" (not ("stderr:" `T.isInfixOf` combinedOut))
+            assertBool "stderr has stderr echo" (any ("stderr: hello" `T.isInfixOf`) errLines),
+      testCase "portsEnds reads stdout and stderr together" $ do
+        let cfg =
+              (baseCfg ["--prompt=mock> ", "--delay=10", "--no-extra-noise", "--echo-stderr"])
+                { replStdinPath = "/tmp/circuits-io-pp-in-2",
+                  replStdoutPath = "/tmp/circuits-io-pp-out-2.md",
+                  replStderrPath = "/tmp/circuits-io-pp-err-2.md"
+                }
+        cleanLogs cfg
+        pp <- openProcessPorts cfg
+        threadDelay 500_000 -- let startup land
+
+        replCommit (replFromPortsStdout pp) ["hello"]
+        threadDelay 1_000_000 -- let response land on both streams
+
+        -- Read both streams through the nested-par wire with an empty commit.
+        (_, (outLines, errLines)) <- runKleisli (run (portsEnds pp)) ([], ((), ()))
+
+        peClose pp
+        threadDelay 100_000
+
+        let combinedOut = T.unlines outLines
+        assertBool "portsEnds stdout has echo" ("echo: hello" `T.isInfixOf` combinedOut)
+        assertBool "portsEnds stderr has stderr echo" (any ("stderr: hello" `T.isInfixOf`) errLines)
+    ]
+  where
+    baseCfg args =
+      ReplConfig
+        { replCommand = "./dist-newstyle/build/aarch64-osx/ghc-9.14.1/circuits-repl-0.1.0.0/x/mock-repl/build/mock-repl/mock-repl",
+          replArgs = args,
+          replStdinPath = "/tmp/circuits-io-pp-in",
+          replStdoutPath = "/tmp/circuits-io-pp-out.md",
+          replStderrPath = "/tmp/circuits-io-pp-err.md",
+          replWorkingDir = "."
+        }
+
+    cleanLogs cfg =
+      mapM_
+        (\p -> whenM (doesFileExist p) (removeFile p))
+        [ replStdinPath cfg,
+          replStdoutPath cfg,
+          replStderrPath cfg,
+          replStdoutPath cfg <> ".cursor",
+          replStderrPath cfg <> ".cursor"
+        ]
+
+    emitErr pp = runKleisli (run (runIn (peErr pp) inU)) ()
+      where
+        (_, inU) = openK ()
+
+    pollUntil :: IO [Text] -> (Text -> Bool) -> Int -> IO (Maybe [Text])
+    pollUntil emit isBoundary timeoutUs = go 0 [] 10000
+      where
+        go elapsed acc delay = do
+          news <- emit
+          let acc' = acc <> news
+          if any isBoundary news
+            then pure (Just acc')
+            else do
+              let elapsed' = elapsed + delay
+              if elapsed' >= timeoutUs
+                then pure Nothing
+                else do
+                  threadDelay delay
+                  let delay' = min 500000 (floor (fromIntegral delay * 1.5 :: Double))
+                  go elapsed' acc' delay'
 
 -- ---------------------------------------------------------------------------
 -- Backend abstraction (FakeFifo vs FakePty, same free dual)
