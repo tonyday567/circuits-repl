@@ -89,7 +89,7 @@ import Prelude
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
--- >>> import Circuit.Classes ((>>>))
+-- >>> import Circuit.Category ((>>>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
@@ -152,7 +152,7 @@ data Repl = Repl
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
--- >>> import Circuit.Classes ((>>>))
+-- >>> import Circuit.Category ((>>>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
@@ -229,7 +229,7 @@ replEnds r = par c e
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
--- >>> import Circuit.Classes ((>>>))
+-- >>> import Circuit.Category ((>>>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
