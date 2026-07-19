@@ -17,10 +17,8 @@
 -- @~/<session>@; for now only the default is supported.
 module Main (main) where
 
-import Circuit (run)
-import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..))
+import Circuit.Ends (Ends (..), HasUnit (..), commit, emit, open)
 import Circuit.Repl
-import Circuit.Trace (Trace (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Concurrent (threadDelay)
 import Control.Monad (unless, when)
@@ -138,7 +136,7 @@ waitForCommand path timeoutUs = go 0 100000
               go elapsed' delay'
 
 commitLines :: ProcessPorts [Text] [Text] [Text] -> [Text] -> IO ()
-commitLines pp ts = runKleisli (run (runOut (peIn pp) outU)) ts
+commitLines pp ts = runKleisli (commit (peIn pp) outU) ts
   where
     Ends _ outU = open
 
@@ -146,12 +144,12 @@ emitOutUntil :: (Text -> Bool) -> Int -> ProcessPorts [Text] [Text] [Text] -> IO
 emitOutUntil p t pp = emitUntil p t (emitOut pp)
 
 emitOut :: ProcessPorts [Text] [Text] [Text] -> IO [Text]
-emitOut pp = runKleisli (run (runIn (peOut pp) inU)) ()
+emitOut pp = runKleisli (emit (peOut pp) inU) ()
   where
     Ends inU _ = open
 
 emitErr :: ProcessPorts [Text] [Text] [Text] -> IO [Text]
-emitErr pp = runKleisli (run (runIn (peErr pp) inU)) ()
+emitErr pp = runKleisli (emit (peErr pp) inU) ()
   where
     Ends inU _ = open
 

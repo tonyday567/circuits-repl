@@ -17,8 +17,8 @@
 -- @
 --   let (outR, inR) = openRepl r
 --       Ends inU outU = open
---   in ( runOut inR outU   -- [Text] → ()
---      , runIn  outR inU   -- () → [Text]
+--   in ( Arr (commit inR outU)   -- [Text] → ()
+--      , Arr (emit  outR inU)   -- () → [Text]
 --      )
 -- @
 --
@@ -26,10 +26,6 @@
 module Circuit.Repl
   ( -- * Handle
     Repl (..),
-
-    -- * Unit-plug helpers
-    runOut,
-    runIn,
 
     -- * Open (free ends)
     openRepl,
@@ -56,7 +52,7 @@ module Circuit.Repl
   )
 where
 
-import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
+import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 import Circuit.Layer (run)
 import Circuit.Monoidal (Tensor (..))
 import Circuit.Trace (Trace (..))
@@ -94,28 +90,11 @@ import Prelude
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
--- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
--- >>> import Circuit.Repl (runIn, runOut)
+-- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.IORef
 -- >>> import Data.Text (Text)
-
--- ---------------------------------------------------------------------------
--- Unit-plug helpers
--- ---------------------------------------------------------------------------
-
--- | Unit ends for @'Kleisli' IO@ with unit @()@.
-unitEnds :: Ends (Kleisli IO) () ()
-unitEnds = open
-
--- | Plug an 'In' end with a unit 'Out' to obtain a commit morphism.
-runOut :: In (Kleisli IO) a -> Out (Kleisli IO) b -> Trace (,) (Kleisli IO) a b
-runOut i o = Arr (commit i o)
-
--- | Plug an 'Out' end with a unit 'In' to obtain an emit morphism.
-runIn :: Out (Kleisli IO) b -> In (Kleisli IO) a -> Trace (,) (Kleisli IO) a b
-runIn o i = Arr (emit o i)
 
 -- ---------------------------------------------------------------------------
 -- Configuration
@@ -174,8 +153,7 @@ data Repl = Repl
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
--- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
--- >>> import Circuit.Repl (runIn, runOut)
+-- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.Text (Text)
@@ -183,7 +161,7 @@ data Repl = Repl
 -- >>> let (outR, inR) = openRepl r
 -- >>> let Ends inU outU = open :: Ends (Kleisli IO) () ()
 -- >>> let send = Arr (Kleisli (\() -> pure ["ping"]))
--- >>> let turn = send >>> runOut inR outU >>> runIn outR inU
+-- >>> let turn = send >>> Arr (commit inR outU) >>> Arr (emit outR inU) :: Trace (,) (Kleisli IO) () [Text]
 -- >>> runKleisli (run turn) ()
 -- ["emit: hello"]
 openRepl :: Repl -> (Out (Kleisli IO) [Text], In (Kleisli IO) [Text])
@@ -212,10 +190,10 @@ openRepl r = (outR, inR)
 -- >>> let _emit = emitM :: Trace (,) (Kleisli IO) () [Text]
 -- >>> let _wire = par commitM emitM :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
 endsRepl :: Repl -> (Trace (,) (Kleisli IO) [Text] (), Trace (,) (Kleisli IO) () [Text])
-endsRepl r = (runOut inR outU, runIn outR inU)
+endsRepl r = (Arr (commit inR outU), Arr (emit outR inU))
   where
     (outR, inR) = openRepl r
-    Ends inU outU = unitEnds
+    Ends inU outU = open
 
 -- | Wire the dual ports with 'par': one Trace morphism (Box / dual-port view).
 --
@@ -252,7 +230,7 @@ replEnds r = par c e
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
--- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
+-- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.Text (Text)
@@ -358,11 +336,11 @@ attachProcessPorts cfg = do
 -- >>> runKleisli (run (portsEnds pp')) (["hello"], ((), ()))
 -- ((),(["hello"],["hello"]))
 portsEnds :: ProcessPorts a b c -> Trace (,) (Kleisli IO) (a, ((), ())) ((), (b, c))
-portsEnds pp = par commit (par out err)
+portsEnds pp = par commitM (par outM errM)
   where
-    commit = runOut (peIn pp) outUIn
-    out    = runIn (peOut pp) inUOut
-    err    = runIn (peErr pp) inUErr
+    commitM = Arr (commit (peIn pp) outUIn)
+    outM    = Arr (emit (peOut pp) inUOut)
+    errM    = Arr (emit (peErr pp) inUErr)
     Ends _inUIn outUIn = open
     Ends inUOut _ = open
     Ends inUErr _ = open
@@ -374,13 +352,15 @@ portsEnds pp = par commit (par out err)
 replFromPortsStdout :: ProcessPorts [Text] [Text] c -> Repl
 replFromPortsStdout pp =
   Repl
-    { replCommit = \ts -> runKleisli (run commit) ts,
-      replEmit = runKleisli (run out) (),
+    { replCommit = \ts -> runKleisli (run commitM) ts,
+      replEmit = runKleisli (run outM) (),
       replClose = peClose pp
     }
   where
-    commit = runOut (peIn pp) outU
-    out    = runIn (peOut pp) inU
+    commitM :: Trace (,) (Kleisli IO) [Text] ()
+    commitM = Arr (commit (peIn pp) outU)
+    outM :: Trace (,) (Kleisli IO) () [Text]
+    outM    = Arr (emit (peOut pp) inU)
     Ends inU outU = open
 
 -- ---------------------------------------------------------------------------
@@ -405,15 +385,15 @@ replOpenPty cfg = do
   Cur.set cursor 0
   lastP  <- newIORef Nothing
 
-  let commit ts = mapM_ (\t -> writePty pty (encodeUtf8 (t <> "\n"))) ts
-      emit   = logEmit (replStdoutPath cfg) cursor lastP
+  let commitAction ts = mapM_ (\t -> writePty pty (encodeUtf8 (t <> "\n"))) ts
+      emitAction   = logEmit (replStdoutPath cfg) cursor lastP
       closeAction  = do
         void $ try @IOException (terminateProcess ph)
         void $ timeout 500_000 $ do
           void $ try @IOException (closePty pty)
           killThread pumpTid
 
-  pure Repl { replCommit = commit, replEmit = emit, replClose = closeAction }
+  pure Repl { replCommit = commitAction, replEmit = emitAction, replClose = closeAction }
 
 -- ---------------------------------------------------------------------------
 -- Constructor: custom (MusterRepl, tests)
@@ -433,10 +413,10 @@ replOpenInject cfg inject = do
   cursor <- Cur.newFile (cursorPath cfg)
   Cur.set cursor 0
   lastP  <- newIORef Nothing
-  let commit ts = mapM_ inject ts
-      emit   = logEmit (replStdoutPath cfg) cursor lastP
+  let commitAction ts = mapM_ inject ts
+      emitAction   = logEmit (replStdoutPath cfg) cursor lastP
       closeAction  = pure ()
-  pure Repl { replCommit = commit, replEmit = emit, replClose = closeAction }
+  pure Repl { replCommit = commitAction, replEmit = emitAction, replClose = closeAction }
 
 -- ---------------------------------------------------------------------------
 -- Attach (read-only, uses existing FIFO)
