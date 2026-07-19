@@ -14,9 +14,9 @@
 module Main (main) where
 
 import Circuit (run)
-import Circuit.Ends (openK)
+import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..))
 import Circuit.Repl
-import Circuit.Trace (runIn, runOut)
+import Circuit.Trace (Trace (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Concurrent (threadDelay)
 import Control.Monad (unless)
@@ -60,14 +60,14 @@ main = do
 
   let turns =
         [ ":t Circuit.Trace.Trace",
-          ":t Circuit.Trace.In",
-          ":t Circuit.Trace.Out",
-          ":t Circuit.Trace.runIn",
-          ":t Circuit.Trace.runOut",
-          ":t Circuit.Trace.close",
-          ":t Circuit.Ends.openK",
+          ":t Circuit.Ends.In",
+          ":t Circuit.Ends.Out",
+          ":t Circuit.Ends.commit",
+          ":t Circuit.Ends.emit",
+          ":t Circuit.Ends.close",
+          ":t Circuit.Ends.HasUnit",
           ":t Circuit.Monoidal.par",
-          ":t Circuit.Queue.boxOf",
+          ":t Circuit.Queue.openSTM",
           ":t Circuit.Repl.portsEnds",
           ":info Circuit.Trace.Trace"
         ]
@@ -99,7 +99,7 @@ turn pp cmd = do
 commitLines :: ProcessPorts [Text] [Text] [Text] -> [Text] -> IO ()
 commitLines pp ts = runKleisli (run (runOut (peIn pp) outU)) ts
   where
-    (outU, _) = openK ()
+    Ends _ outU = open
 
 emitOutUntil :: (Text -> Bool) -> Int -> ProcessPorts [Text] [Text] [Text] -> IO (Maybe [Text])
 emitOutUntil p t pp = emitUntil p t (emitOut pp)
@@ -107,12 +107,12 @@ emitOutUntil p t pp = emitUntil p t (emitOut pp)
 emitOut :: ProcessPorts [Text] [Text] [Text] -> IO [Text]
 emitOut pp = runKleisli (run (runIn (peOut pp) inU)) ()
   where
-    (_, inU) = openK ()
+    Ends inU _ = open
 
 emitErr :: ProcessPorts [Text] [Text] [Text] -> IO [Text]
 emitErr pp = runKleisli (run (runIn (peErr pp) inU)) ()
   where
-    (_, inU) = openK ()
+    Ends inU _ = open
 
 emitUntil :: (Text -> Bool) -> Int -> IO [Text] -> IO (Maybe [Text])
 emitUntil isBoundary timeoutUs emit = go 0 [] 10000

@@ -51,8 +51,6 @@ library
     Cursor
     Circuit.Comm
     Circuit.Repl
-    Circuit.Repl.Agent
-    Circuit.Repl.PingPong
     Circuit.Repl.Turn
 
   build-depends:

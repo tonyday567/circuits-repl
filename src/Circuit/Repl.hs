@@ -16,7 +16,7 @@
 --
 -- @
 --   let (outR, inR) = openRepl r
---       (outU, inU) = openK ()
+--       Ends inU outU = open
 --   in ( runOut inR outU   -- [Text] → ()
 --      , runIn  outR inU   -- () → [Text]
 --      )
@@ -26,9 +26,10 @@
 module Circuit.Repl
   ( -- * Handle
     Repl (..),
-    replCommit,
-    replEmit,
-    replClose,
+
+    -- * Unit-plug helpers
+    runOut,
+    runIn,
 
     -- * Open (free ends)
     openRepl,
@@ -55,11 +56,10 @@ module Circuit.Repl
   )
 where
 
-import Circuit.Ends (openK)
+import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
 import Circuit.Layer (run)
 import Circuit.Monoidal (Tensor (..))
-import Circuit.Queue (Commit, Emit)
-import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
+import Circuit.Trace (Trace (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
@@ -94,12 +94,28 @@ import Prelude
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
--- >>> import Circuit.Ends (openK)
--- >>> import Circuit.Queue (Commit, Emit)
--- >>> import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
+-- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
+-- >>> import Circuit.Repl (runIn, runOut)
+-- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.IORef
 -- >>> import Data.Text (Text)
+
+-- ---------------------------------------------------------------------------
+-- Unit-plug helpers
+-- ---------------------------------------------------------------------------
+
+-- | Unit ends for @'Kleisli' IO@ with unit @()@.
+unitEnds :: Ends (Kleisli IO) () ()
+unitEnds = open
+
+-- | Plug an 'In' end with a unit 'Out' to obtain a commit morphism.
+runOut :: In (Kleisli IO) a -> Out (Kleisli IO) b -> Trace (,) (Kleisli IO) a b
+runOut i o = Arr (commit i o)
+
+-- | Plug an 'Out' end with a unit 'In' to obtain an emit morphism.
+runIn :: Out (Kleisli IO) b -> In (Kleisli IO) a -> Trace (,) (Kleisli IO) a b
+runIn o i = Arr (emit o i)
 
 -- ---------------------------------------------------------------------------
 -- Configuration
@@ -146,59 +162,60 @@ data Repl = Repl
 -- a circuit with 'par' (see 'replEnds'), not by treating this pair as tensor.
 --
 -- Same extrinsic pattern as 'open' / 'openSTM': both polarities share the
--- process. Unit-plug with 'openK' @()@ for boring ports ('endsRepl').
+-- process. Unit-plug with 'open' @()@ for boring ports ('endsRepl').
 --
 -- Clarity ladder (no extra structure):
 --
 -- * 'openRepl' — free dual store (handles)
--- * 'endsRepl' — unit plug each → Commit / Emit (still handles)
+-- * 'endsRepl' — unit plug each → commit / emit morphisms (still handles)
 -- * 'replEnds' — 'par' of those → one Trace morphism (wiring)
 --
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
--- >>> import Circuit.Ends (openK)
--- >>> import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
+-- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
+-- >>> import Circuit.Repl (runIn, runOut)
+-- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.Text (Text)
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["emit: hello"], replClose = pure () }
 -- >>> let (outR, inR) = openRepl r
--- >>> let (outU, inU) = openK ()
+-- >>> let Ends inU outU = open :: Ends (Kleisli IO) () ()
 -- >>> let send = Arr (Kleisli (\() -> pure ["ping"]))
 -- >>> let turn = send >>> runOut inR outU >>> runIn outR inU
 -- >>> runKleisli (run turn) ()
 -- ["emit: hello"]
-openRepl :: Repl -> (Out (Kleisli IO) (,) [Text], In (Kleisli IO) (,) [Text])
+openRepl :: Repl -> (Out (Kleisli IO) [Text], In (Kleisli IO) [Text])
 openRepl r = (outR, inR)
   where
     -- Out: harvest from the process (ignore opposing In for the read).
-    outR = Out $ \_ -> Arr (Kleisli $ \_ -> replEmit r)
+    outR = Out $ \_ -> Kleisli $ \_ -> replEmit r
     -- In: feed the process, then continue through the opposing Out (openSTM shape).
     inR =
       In $ \o ->
-        Arr
-          ( Kleisli $ \ts -> do
+        Kleisli
+          ( \ts -> do
               replCommit r ts
-              runKleisli (run (runIn o inR)) ts
+              runKleisli (emit o inR) ts
           )
 
--- | Unit-plug free ends: boring 'Commit' / 'Emit' handles (still a pair of values).
+-- | Unit-plug free ends: boring commit / emit handles (still a pair of values).
 --
--- @Commit@ is @a → ()@, @Emit@ is @() → a@. Not monoidal packaging — for that
+-- @commit@ is @a → ()@, @emit@ is @() → a@. Not monoidal packaging — for that
 -- use 'replEnds' ('par'). Free dual remains 'openRepl'.
 --
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hello"], replClose = pure () }
--- >>> let _openR = openRepl r :: (Out (Kleisli IO) (,) [Text], In (Kleisli IO) (,) [Text])
--- >>> let (commit, emit) = endsRepl r
--- >>> let _commit = commit :: Commit IO [Text]
--- >>> let _emit = emit :: Emit IO [Text]
--- >>> let _wire = par commit emit :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
-endsRepl :: Repl -> (Commit IO [Text], Emit IO [Text])
+-- >>> let _openR = openRepl r :: (Out (Kleisli IO) [Text], In (Kleisli IO) [Text])
+-- >>> let (commitM, emitM) = endsRepl r
+-- >>> let _commit = commitM :: Trace (,) (Kleisli IO) [Text] ()
+-- >>> let _emit = emitM :: Trace (,) (Kleisli IO) () [Text]
+-- >>> let _wire = par commitM emitM :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+endsRepl :: Repl -> (Trace (,) (Kleisli IO) [Text] (), Trace (,) (Kleisli IO) () [Text])
 endsRepl r = (runOut inR outU, runIn outR inU)
   where
     (outR, inR) = openRepl r
-    (outU, inU) = openK ()
+    Ends inU outU = unitEnds
 
 -- | Wire the dual ports with 'par': one Trace morphism (Box / dual-port view).
 --
@@ -235,16 +252,16 @@ replEnds r = par c e
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Classes ((>>>))
--- >>> import Circuit.Ends (openK)
--- >>> import Circuit.Trace (In (..), Out (..), Trace (..), runIn, runOut)
+-- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close)
+-- >>> import Circuit.Trace (Trace (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.Text (Text)
 data ProcessPorts a b c = ProcessPorts
-  { peIn    :: In  (Kleisli IO) (,) a
+  { peIn    :: In  (Kleisli IO) a
   -- ^ Write TO the process (stdin / commit).
-  , peOut   :: Out (Kleisli IO) (,) b
+  , peOut   :: Out (Kleisli IO) b
   -- ^ Read FROM the process stdout.
-  , peErr   :: Out (Kleisli IO) (,) c
+  , peErr   :: Out (Kleisli IO) c
   -- ^ Read FROM the process stderr.
   , peClose :: IO ()
   -- ^ Release handles / kill child / detach.
@@ -285,12 +302,12 @@ openProcessPorts cfg = do
   let commit ts = mapM_ (\t -> withFile (replStdinPath cfg) WriteMode $ \h -> do
         TIO.hPutStrLn h t
         hFlush h) ts
-      peIn_ = In $ \o -> Arr (Kleisli $ \ts -> commit ts >> runKleisli (run (runIn o peIn_)) ts)
-      peOut_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStdoutPath cfg) stdoutCursor lastOutP)
-      peErr_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStderrPath cfg) stderrCursor lastErrP)
-      close = terminateProcess ph
+      peIn_ = In $ \o -> Kleisli $ \ts -> commit ts >> runKleisli (emit o peIn_) ts
+      peOut_ = Out $ \_ -> Kleisli $ \_ -> logEmit (replStdoutPath cfg) stdoutCursor lastOutP
+      peErr_ = Out $ \_ -> Kleisli $ \_ -> logEmit (replStderrPath cfg) stderrCursor lastErrP
+      closeAction = terminateProcess ph
 
-  pure ProcessPorts { peIn = peIn_, peOut = peOut_, peErr = peErr_, peClose = close }
+  pure ProcessPorts { peIn = peIn_, peOut = peOut_, peErr = peErr_, peClose = closeAction }
 
 -- | Attach to an existing process's logs without spawning.
 --
@@ -313,19 +330,19 @@ attachProcessPorts cfg = do
   let commit ts = mapM_ (\t -> withFile (replStdinPath cfg) WriteMode $ \h -> do
         TIO.hPutStrLn h t
         hFlush h) ts
-      peIn_ = In $ \o -> Arr (Kleisli $ \ts -> commit ts >> runKleisli (run (runIn o peIn_)) ts)
-      peOut_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStdoutPath cfg) stdoutCursor lastOutP)
-      peErr_ = Out $ \_ -> Arr (Kleisli $ \_ -> logEmit (replStderrPath cfg) stderrCursor lastErrP)
-      close = pure () -- attach does not own the process
+      peIn_ = In $ \o -> Kleisli $ \ts -> commit ts >> runKleisli (emit o peIn_) ts
+      peOut_ = Out $ \_ -> Kleisli $ \_ -> logEmit (replStdoutPath cfg) stdoutCursor lastOutP
+      peErr_ = Out $ \_ -> Kleisli $ \_ -> logEmit (replStderrPath cfg) stderrCursor lastErrP
+      closeAction = pure () -- attach does not own the process
 
-  pure ProcessPorts { peIn = peIn_, peOut = peOut_, peErr = peErr_, peClose = close }
+  pure ProcessPorts { peIn = peIn_, peOut = peOut_, peErr = peErr_, peClose = closeAction }
 
 -- | The wire view of 'ProcessPorts': one nested 'par' morphism.
 --
 -- Store @(peIn, (peOut, peErr))@ becomes
 -- @par commit (par out err) :: Trace (,) (Kleisli IO) (a, ((), ())) ((), (b, c))@.
 --
--- Each free end is unit-plugged with its own 'openK ()' pair; the three
+-- Each free end is unit-plugged with its own 'open' @()@ pair; the three
 -- unit plugs are independent channels.
 --
 -- >>> let pp = ProcessPorts { peIn = undefined, peOut = undefined, peErr = undefined, peClose = pure () }
@@ -335,8 +352,8 @@ attachProcessPorts cfg = do
 -- nested par reads it back through both @Out@ seats.
 --
 -- >>> ref <- newIORef ([] :: [Text])
--- >>> let commit = In $ \o -> Arr (Kleisli $ \ts -> writeIORef ref ts >> runKleisli (run (runIn o commit)) ts)
--- >>> let emit   = Out $ \_ -> Arr (Kleisli $ \_ -> readIORef ref)
+-- >>> let commit = In $ \o -> Kleisli $ \ts -> writeIORef ref ts >> runKleisli (emit o commit) ts
+-- >>> let emit   = Out $ \_ -> Kleisli $ \_ -> readIORef ref
 -- >>> let pp' = ProcessPorts { peIn = commit, peOut = emit, peErr = emit, peClose = pure () }
 -- >>> runKleisli (run (portsEnds pp')) (["hello"], ((), ()))
 -- ((),(["hello"],["hello"]))
@@ -346,9 +363,9 @@ portsEnds pp = par commit (par out err)
     commit = runOut (peIn pp) outUIn
     out    = runIn (peOut pp) inUOut
     err    = runIn (peErr pp) inUErr
-    (outUIn, _) = openK ()
-    (_, inUOut) = openK ()
-    (_, inUErr) = openK ()
+    Ends _inUIn outUIn = open
+    Ends inUOut _ = open
+    Ends inUErr _ = open
 
 -- | The old stdout-only 'Repl' view, extracted from 'ProcessPorts'.
 --
@@ -364,7 +381,7 @@ replFromPortsStdout pp =
   where
     commit = runOut (peIn pp) outU
     out    = runIn (peOut pp) inU
-    (outU, inU) = openK ()
+    Ends inU outU = open
 
 -- ---------------------------------------------------------------------------
 -- Constructor: FIFO
@@ -390,13 +407,13 @@ replOpenPty cfg = do
 
   let commit ts = mapM_ (\t -> writePty pty (encodeUtf8 (t <> "\n"))) ts
       emit   = logEmit (replStdoutPath cfg) cursor lastP
-      close  = do
+      closeAction  = do
         void $ try @IOException (terminateProcess ph)
         void $ timeout 500_000 $ do
           void $ try @IOException (closePty pty)
           killThread pumpTid
 
-  pure Repl { replCommit = commit, replEmit = emit, replClose = close }
+  pure Repl { replCommit = commit, replEmit = emit, replClose = closeAction }
 
 -- ---------------------------------------------------------------------------
 -- Constructor: custom (MusterRepl, tests)
@@ -418,8 +435,8 @@ replOpenInject cfg inject = do
   lastP  <- newIORef Nothing
   let commit ts = mapM_ inject ts
       emit   = logEmit (replStdoutPath cfg) cursor lastP
-      close  = pure ()
-  pure Repl { replCommit = commit, replEmit = emit, replClose = close }
+      closeAction  = pure ()
+  pure Repl { replCommit = commit, replEmit = emit, replClose = closeAction }
 
 -- ---------------------------------------------------------------------------
 -- Attach (read-only, uses existing FIFO)
@@ -489,4 +506,3 @@ logEmit logPath cursor lastP = do
           | old == p             -> []
         ([], _, Just p)          -> [p]
   pure (news <> partialNews)
-

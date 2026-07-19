@@ -4,14 +4,9 @@ module Main where
 
 import Circuit (Trace (..), run)
 import Circuit.Comm
-import Circuit.Ends (openK)
-import Circuit.Int (IntMorph (..), causal, comp)
-import Circuit.Poly (Mono, Morphism, applyLens, lens)
+import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), emit)
 import Circuit.Repl
-import Circuit.Repl.Agent (AgentVerb (..), agentRoster, openAgentRosterRepl, verbDelta)
-import Circuit.Repl.PingPong (openPingPongRepl, pingPongLens)
 import Circuit.Repl.Turn (TurnConfig (..), defaultTurnConfig, turnUntil)
-import Circuit.Trace (runIn)
 import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Concurrent (threadDelay)
 import Control.Monad (forM_, when)
@@ -33,9 +28,7 @@ main =
         processPortsTests,
         backendTests,
         musterReplTests,
-        channelTests,
-        agentIntTests,
-        pingPongIntTests
+        channelTests
       ]
 
 -- ---------------------------------------------------------------------------
@@ -286,7 +279,9 @@ processPortsTests =
 
     emitErr pp = runKleisli (run (runIn (peErr pp) inU)) ()
       where
-        (_, inU) = openK ()
+        Ends inU _ = open
+        runIn :: Out (Kleisli IO) b -> In (Kleisli IO) a -> Trace (,) (Kleisli IO) a b
+        runIn o i = Arr (emit o i)
 
     pollUntil :: IO [Text] -> (Text -> Bool) -> Int -> IO (Maybe [Text])
     pollUntil emit isBoundary timeoutUs = go 0 [] 10000
@@ -308,103 +303,6 @@ processPortsTests =
 -- ---------------------------------------------------------------------------
 -- Backend abstraction (FakeFifo vs FakePty, same free dual)
 -- ---------------------------------------------------------------------------
-
--- ---------------------------------------------------------------------------
--- BackendCustom ↔ causal/IN (agent roster)
--- ---------------------------------------------------------------------------
-
-agentIntTests :: TestTree
-agentIntTests =
-  testGroup
-    "BackendCustom agentRoster ↔ causal/IN"
-    [ testCase "commit/emit tracks pure Int morph" $ do
-        r <- openAgentRosterRepl
-        let pureStep n v = fst (runIntMorph (causal agentRoster) (n, verbDelta v))
-        -- join
-        pureStep 0 Join @?= 1
-        replCommit r ["join"]
-        e1 <- replEmit r
-        e1 @?= ["1"]
-        -- ack
-        pureStep 1 Ack @?= 1
-        replCommit r ["ack"]
-        e2 <- replEmit r
-        e2 @?= ["1"]
-        -- quit
-        pureStep 1 Quit @?= 0
-        replCommit r ["quit"]
-        e3 <- replEmit r
-        e3 @?= ["0"]
-        -- openRepl free ends still well-typed and live
-        let (outR, inR) = openRepl r
-        _ <- pure (outR, inR)
-        replClose r
-    , testCase "unknown commit is a no-op" $ do
-        r <- openAgentRosterRepl
-        replCommit r ["nope"]
-        e <- replEmit r
-        e @?= ["0"]
-        replClose r
-    , testCase "agentRoster lens semantics" $ do
-        let (out, put) = applyLens agentRoster 0
-        out @?= (0 :: Int)
-        put 1 @?= (1 :: Int)
-        put (-1) @?= (0 :: Int)
-    , testCase "causal agentRoster join/ack/quit" $ do
-        runIntMorph (causal agentRoster) (0 :: Int, verbDelta Join) @?= (1 :: Int, 0 :: Int)
-        runIntMorph (causal agentRoster) (2 :: Int, verbDelta Ack) @?= (2 :: Int, 2 :: Int)
-        runIntMorph (causal agentRoster) (1 :: Int, verbDelta Quit) @?= (0 :: Int, 1 :: Int)
-    , testCase "Trace comp equals lens Compose (trivial knot)" $ do
-        let cz m = IntMorph (Arr (\(a, db) -> let (b, put) = applyLens m a in (put db, b)))
-            composed = comp (cz agentRoster) (cz agentRoster)
-        run (runIntMorph composed) (0 :: Int, verbDelta Quit) @?= (0 :: Int, 0 :: Int)
-    , testCase "multi-verb path join→ack→quit restores zero" $ do
-        let step n v = fst (runIntMorph (causal agentRoster) (n, verbDelta v))
-        step (step (step 0 Join) Ack) Quit @?= (0 :: Int)
-    ]
-
--- ---------------------------------------------------------------------------
--- BackendCustom ↔ causal/IN (concrete ping/pong turn)
--- ---------------------------------------------------------------------------
-
-pingPongIntTests :: TestTree
-pingPongIntTests =
-  testGroup
-    "BackendCustom ping/pong ↔ causal/IN"
-    [ testCase "causal lens predicts immediate emit" $ do
-        runIntMorph (causal pingPongLens) (["ping"], []) @?= ([], ["pong"])
-        runIntMorph (causal pingPongLens) (["foo"], []) @?= ([], []),
-      testCase "BackendCustom Repl agrees with causal lens" $ do
-        r <- openPingPongRepl
-        replCommit r ["ping"]
-        e1 <- replEmit r
-        e1 @?= ["pong"]
-        replCommit r ["foo"]
-        e2 <- replEmit r
-        e2 @?= []
-        replClose r,
-      testCase "turnUntil ties the dual ends" $ do
-        r <- openPingPongRepl
-        m <- runKleisli (run (turnUntil defaultTurnConfig (T.isInfixOf "pong") r)) ["ping"]
-        m @?= Just ["pong"]
-        replClose r,
-      testCase "openRepl exposes free In/Out ends" $ do
-        r <- openPingPongRepl
-        let (outR, inR) = openRepl r
-        _ <- pure (outR, inR)
-        replClose r,
-      testCase "IntMorph composition via trace equals direct semantics" $ do
-        let ackLens = lens (const ["ack"] :: [Text] -> [Text]) (const (const []))
-            cz ::
-              forall x xd y yd.
-              Morphism (Mono x xd) (Mono y yd) ->
-              IntMorph (,) (Trace (,) (->)) x xd y yd
-            cz m = IntMorph (Arr (\(a, db) -> let (b, put) = applyLens m a in (put db, b)))
-            f = cz pingPongLens
-            g = cz ackLens
-            composed = g `comp` f
-        run (runIntMorph composed) (["ping"], []) @?= ([], ["ack"])
-    ]
 
 backendTests :: TestTree
 backendTests =

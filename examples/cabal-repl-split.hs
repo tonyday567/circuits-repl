@@ -20,9 +20,9 @@
 module Main (main) where
 
 import Circuit (run)
-import Circuit.Ends (openK)
+import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..))
 import Circuit.Repl
-import Circuit.Trace (runIn, runOut)
+import Circuit.Trace (Trace (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Concurrent (threadDelay)
 import Control.Monad (unless, when)
@@ -126,7 +126,7 @@ main = do
 commitLines :: ProcessPorts [Text] [Text] [Text] -> [Text] -> IO ()
 commitLines pp ts = runKleisli (run (runOut (peIn pp) outU)) ts
   where
-    (outU, _) = openK ()
+    Ends _ outU = open
 
 emitOutUntil :: (Text -> Bool) -> Int -> ProcessPorts [Text] [Text] [Text] -> IO (Maybe [Text])
 emitOutUntil p t pp = emitUntil p t (emitOut pp)
@@ -137,12 +137,12 @@ emitErrUntil p t pp = emitUntil p t (emitErr pp)
 emitOut :: ProcessPorts [Text] [Text] [Text] -> IO [Text]
 emitOut pp = runKleisli (run (runIn (peOut pp) inU)) ()
   where
-    (_, inU) = openK ()
+    Ends inU _ = open
 
 emitErr :: ProcessPorts [Text] [Text] [Text] -> IO [Text]
 emitErr pp = runKleisli (run (runIn (peErr pp) inU)) ()
   where
-    (_, inU) = openK ()
+    Ends inU _ = open
 
 emitUntil :: (Text -> Bool) -> Int -> IO [Text] -> IO (Maybe [Text])
 emitUntil isBoundary timeoutUs emit = go 0 [] 10000
