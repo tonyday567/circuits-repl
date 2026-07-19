@@ -54,7 +54,7 @@ where
 
 import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 import Circuit.Layer (run)
-import Circuit.Monoidal (Tensor (..))
+import Circuit.Tensor (Tensor (..))
 import Circuit.Trace (Trace (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 
