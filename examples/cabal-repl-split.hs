@@ -22,7 +22,6 @@ module Main (main) where
 import Circuit (run)
 import Circuit.Ends (Ends (..), HasUnit (..), commit, emit, open)
 import Circuit.Repl
-import Circuit.Trace (Trace (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Concurrent (threadDelay)
 import Control.Monad (unless, when)

@@ -8,8 +8,8 @@
 -- the tying schedule lives here, outside the core library.
 --
 -- @
---   closeOnce cfg r  :: Trace (,) (Kleisli IO) [Text] (Maybe [Text])
---   turnUntil cfg p r :: Trace (,) (Kleisli IO) [Text] (Maybe [Text])
+--   closeOnce cfg r  :: Loop (,) (Kleisli IO) [Text] (Maybe [Text])
+--   turnUntil cfg p r :: Loop (,) (Kleisli IO) [Text] (Maybe [Text])
 -- @
 --
 -- Both return 'Nothing' when the timeout expires before the boundary is
@@ -26,7 +26,7 @@ module Circuit.Repl.Turn
   )
 where
 
-import Circuit (Trace (..))
+import Circuit (Loop (..))
 import Circuit.Repl (Repl, replCommit, replEmit)
 import Control.Arrow (Kleisli (..))
 import Control.Concurrent (threadDelay)
@@ -59,8 +59,8 @@ turnUntil ::
   TurnConfig ->
   (Text -> Bool) ->
   Repl ->
-  Trace (,) (Kleisli IO) [Text] (Maybe [Text])
-turnUntil cfg isBoundary r = Arr $ Kleisli $ \cmds -> do
+  Loop (,) (Kleisli IO) [Text] (Maybe [Text])
+turnUntil cfg isBoundary r = Lift $ Kleisli $ \cmds -> do
   replCommit r cmds
   poll 0 [] 10_000
   where
@@ -84,5 +84,5 @@ turnUntil cfg isBoundary r = Arr $ Kleisli $ \cmds -> do
 closeOnce ::
   TurnConfig ->
   Repl ->
-  Trace (,) (Kleisli IO) [Text] (Maybe [Text])
+  Loop (,) (Kleisli IO) [Text] (Maybe [Text])
 closeOnce cfg = turnUntil cfg (T.isInfixOf (turnEofTag cfg))

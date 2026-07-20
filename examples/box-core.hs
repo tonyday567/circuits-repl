@@ -1,9 +1,9 @@
 {-# LANGUAGE FlexibleInstances #-}
 
--- | Box: profunctor streaming with Trace Either (Kleisli Identity).
+-- | Box: profunctor streaming with Loop Either (Kleisli Identity).
 --
 --   Types:
---     Box c e        = Trace Either (Kleisli Identity) c e
+--     Box c e        = Loop Either (Kleisli Identity) c e
 --     Emitter a      = Box () a      — produces one a per step
 --     Committer a    = Box a ()      — consumes one a per step
 --
@@ -18,14 +18,15 @@
 --   This example uses 'Identity' to stay pure and compile cleanly.
 module Box where
 
-import Circuit.Trace (Trace (..), realise)
+import Circuit.Layer (run)
+import Circuit.Loop (Loop (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 import Control.Category ((.))
 import Data.Functor.Identity (Identity (..))
 import Prelude hiding (id, (.))
 
 -- Core types
-type Box c e = Trace Either (Kleisli Identity) c e
+type Box c e = Loop Either (Kleisli Identity) c e
 
 type Emitter a = Box () a
 
@@ -33,7 +34,7 @@ type Committer a = Box a ()
 
 -- Lower: interpret to a pure function (single step)
 runB :: Box c e -> c -> e
-runB b c = runIdentity (runKleisli (realise b) c)
+runB b c = runIdentity (runKleisli (run b) c)
 
 runE :: Emitter a -> a
 runE e = runB e ()
@@ -48,7 +49,7 @@ unit a = (Lift (Kleisli (const (pure a))), Lift (Kleisli (const (pure ()))))
 
 -- Counit: compose and run — the annihilator.
 counit :: Committer a -> Emitter a -> ()
-counit c e = runB (Compose c e) ()
+counit c e = runB (c . e) ()
 
 -- Glue: convenience alias for counit
 glue :: Committer a -> Emitter a -> ()

@@ -17,8 +17,8 @@
 -- @
 --   let (outR, inR) = openRepl r
 --       Ends inU outU = open
---   in ( Arr (commit inR outU)   -- [Text] → ()
---      , Arr (emit  outR inU)   -- () → [Text]
+--   in ( Lift (commit inR outU)   -- [Text] → ()
+--      , Lift (emit  outR inU)   -- () → [Text]
 --      )
 -- @
 --
@@ -54,8 +54,8 @@ where
 
 import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 import Circuit.Layer (run)
+import Circuit.Loop (Loop (..))
 import Circuit.Tensor (Tensor (..))
-import Circuit.Trace (Trace (..))
 import Control.Arrow (Kleisli (..), runKleisli)
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
@@ -91,7 +91,7 @@ import Prelude
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Category ((>>>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
--- >>> import Circuit.Trace (Trace (..))
+-- >>> import Circuit.Loop (Loop (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.IORef
 -- >>> import Data.Text (Text)
@@ -147,21 +147,21 @@ data Repl = Repl
 --
 -- * 'openRepl' — free dual store (handles)
 -- * 'endsRepl' — unit plug each → commit / emit morphisms (still handles)
--- * 'replEnds' — 'par' of those → one Trace morphism (wiring)
+-- * 'replEnds' — 'par' of those → one Loop morphism (wiring)
 --
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Category ((>>>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
--- >>> import Circuit.Trace (Trace (..))
+-- >>> import Circuit.Loop (Loop (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.Text (Text)
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["emit: hello"], replClose = pure () }
 -- >>> let (outR, inR) = openRepl r
 -- >>> let Ends inU outU = open :: Ends (Kleisli IO) () ()
--- >>> let send = Arr (Kleisli (\() -> pure ["ping"]))
--- >>> let turn = send >>> Arr (commit inR outU) >>> Arr (emit outR inU) :: Trace (,) (Kleisli IO) () [Text]
+-- >>> let send = Lift (Kleisli (\() -> pure ["ping"]))
+-- >>> let turn = send >>> Lift (commit inR outU) >>> Lift (emit outR inU) :: Loop (,) (Kleisli IO) () [Text]
 -- >>> runKleisli (run turn) ()
 -- ["emit: hello"]
 openRepl :: Repl -> (Out (Kleisli IO) [Text], In (Kleisli IO) [Text])
@@ -186,23 +186,23 @@ openRepl r = (outR, inR)
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hello"], replClose = pure () }
 -- >>> let _openR = openRepl r :: (Out (Kleisli IO) [Text], In (Kleisli IO) [Text])
 -- >>> let (commitM, emitM) = endsRepl r
--- >>> let _commit = commitM :: Trace (,) (Kleisli IO) [Text] ()
--- >>> let _emit = emitM :: Trace (,) (Kleisli IO) () [Text]
--- >>> let _wire = par commitM emitM :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
-endsRepl :: Repl -> (Trace (,) (Kleisli IO) [Text] (), Trace (,) (Kleisli IO) () [Text])
-endsRepl r = (Arr (commit inR outU), Arr (emit outR inU))
+-- >>> let _commit = commitM :: Loop (,) (Kleisli IO) [Text] ()
+-- >>> let _emit = emitM :: Loop (,) (Kleisli IO) () [Text]
+-- >>> let _wire = par commitM emitM :: Loop (,) (Kleisli IO) ([Text], ()) ((), [Text])
+endsRepl :: Repl -> (Loop (,) (Kleisli IO) [Text] (), Loop (,) (Kleisli IO) () [Text])
+endsRepl r = (Lift (commit inR outU), Lift (emit outR inU))
   where
     (outR, inR) = openRepl r
     Ends inU outU = open
 
--- | Wire the dual ports with 'par': one Trace morphism (Box / dual-port view).
+-- | Wire the dual ports with 'par': one Loop morphism (Box / dual-port view).
 --
 -- Conjoint / companion: 'Out' companion, 'In' conjoint, 'open'/'close' = η/ε.
 -- 'openRepl' holds free ends; 'endsRepl' unit-plugs; this packages with 'par':
 --
 -- @
 --   replEnds r = par c e   where (c, e) = endsRepl r
---   :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+--   :: Loop (,) (Kleisli IO) ([Text], ()) ((), [Text])
 -- @
 --
 -- Prefer this over advertising @(Out, In)@ as a monoidal object. Multi-channel
@@ -210,8 +210,8 @@ endsRepl r = (Arr (commit inR outU), Arr (emit outR inU))
 -- product type. No extra structure beyond free store + 'par'.
 --
 -- >>> let r = Repl { replCommit = \_ -> pure (), replEmit = pure ["hi"], replClose = pure () }
--- >>> let _wire = replEnds r :: Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
-replEnds :: Repl -> Trace (,) (Kleisli IO) ([Text], ()) ((), [Text])
+-- >>> let _wire = replEnds r :: Loop (,) (Kleisli IO) ([Text], ()) ((), [Text])
+replEnds :: Repl -> Loop (,) (Kleisli IO) ([Text], ()) ((), [Text])
 replEnds r = par c e
   where
     (c, e) = endsRepl r
@@ -231,7 +231,7 @@ replEnds r = par c e
 -- >>> import Circuit (run, par)
 -- >>> import Circuit.Category ((>>>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
--- >>> import Circuit.Trace (Trace (..))
+-- >>> import Circuit.Loop (Loop (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
 -- >>> import Data.Text (Text)
 data ProcessPorts a b c = ProcessPorts
@@ -318,13 +318,13 @@ attachProcessPorts cfg = do
 -- | The wire view of 'ProcessPorts': one nested 'par' morphism.
 --
 -- Store @(peIn, (peOut, peErr))@ becomes
--- @par commit (par out err) :: Trace (,) (Kleisli IO) (a, ((), ())) ((), (b, c))@.
+-- @par commit (par out err) :: Loop (,) (Kleisli IO) (a, ((), ())) ((), (b, c))@.
 --
 -- Each free end is unit-plugged with its own 'open' @()@ pair; the three
 -- unit plugs are independent channels.
 --
 -- >>> let pp = ProcessPorts { peIn = undefined, peOut = undefined, peErr = undefined, peClose = pure () }
--- >>> let _wire = portsEnds pp :: Trace (,) (Kleisli IO) ([Text], ((), ())) ((), ([Text], [Text]))
+-- >>> let _wire = portsEnds pp :: Loop (,) (Kleisli IO) ([Text], ((), ())) ((), ([Text], [Text]))
 --
 -- Round-trip doctest (no process spawn): commit writes a shared cell; the
 -- nested par reads it back through both @Out@ seats.
@@ -335,12 +335,12 @@ attachProcessPorts cfg = do
 -- >>> let pp' = ProcessPorts { peIn = commit, peOut = emit, peErr = emit, peClose = pure () }
 -- >>> runKleisli (run (portsEnds pp')) (["hello"], ((), ()))
 -- ((),(["hello"],["hello"]))
-portsEnds :: ProcessPorts a b c -> Trace (,) (Kleisli IO) (a, ((), ())) ((), (b, c))
+portsEnds :: ProcessPorts a b c -> Loop (,) (Kleisli IO) (a, ((), ())) ((), (b, c))
 portsEnds pp = par commitM (par outM errM)
   where
-    commitM = Arr (commit (peIn pp) outUIn)
-    outM    = Arr (emit (peOut pp) inUOut)
-    errM    = Arr (emit (peErr pp) inUErr)
+    commitM = Lift (commit (peIn pp) outUIn)
+    outM    = Lift (emit (peOut pp) inUOut)
+    errM    = Lift (emit (peErr pp) inUErr)
     Ends _inUIn outUIn = open
     Ends inUOut _ = open
     Ends inUErr _ = open
@@ -357,10 +357,10 @@ replFromPortsStdout pp =
       replClose = peClose pp
     }
   where
-    commitM :: Trace (,) (Kleisli IO) [Text] ()
-    commitM = Arr (commit (peIn pp) outU)
-    outM :: Trace (,) (Kleisli IO) () [Text]
-    outM    = Arr (emit (peOut pp) inU)
+    commitM :: Loop (,) (Kleisli IO) [Text] ()
+    commitM = Lift (commit (peIn pp) outU)
+    outM :: Loop (,) (Kleisli IO) () [Text]
+    outM    = Lift (emit (peOut pp) inU)
     Ends inU outU = open
 
 -- ---------------------------------------------------------------------------
