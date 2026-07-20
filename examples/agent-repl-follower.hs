@@ -40,14 +40,14 @@ main = do
   runFollower dir 0 plan
   where
     plan =
-      [ ":t Circuit.Trace.Trace",
-        ":t Circuit.Trace.In",
-        ":t Circuit.Trace.Out",
-        ":t Circuit.Trace.runIn",
-        ":t Circuit.Trace.runOut",
-        ":t Circuit.Trace.close",
+      [ ":t Circuit.Loop.Loop",
+        ":t Circuit.Ends.In",
+        ":t Circuit.Ends.Out",
+        ":t Circuit.Ends.commit",
+        ":t Circuit.Ends.emit",
+        ":t Circuit.Ends.close",
         ":t Circuit.Repl.portsEnds",
-        ":info Circuit.Trace.Trace",
+        ":info Circuit.Loop.Loop",
         "quit"
       ]
 

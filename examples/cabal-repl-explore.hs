@@ -57,17 +57,17 @@ main = do
     Just _ -> pure ()
 
   let turns =
-        [ ":t Circuit.Trace.Trace",
+        [ ":t Circuit.Loop.Loop",
           ":t Circuit.Ends.In",
           ":t Circuit.Ends.Out",
           ":t Circuit.Ends.commit",
           ":t Circuit.Ends.emit",
           ":t Circuit.Ends.close",
           ":t Circuit.Ends.HasUnit",
-          ":t Circuit.Monoidal.par",
-          ":t Circuit.Queue.openSTM",
+          ":t Circuit.Tensor.par",
+          ":t Circuit.Ends.openSTM",
           ":t Circuit.Repl.portsEnds",
-          ":info Circuit.Trace.Trace"
+          ":info Circuit.Loop.Loop"
         ]
 
   mapM_ (turn pp) turns
