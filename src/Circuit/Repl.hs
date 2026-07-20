@@ -89,7 +89,7 @@ import Prelude
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
--- >>> import Circuit.Category ((>>>))
+-- >>> import Circuit.Category ((.>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Loop (Loop (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
@@ -152,7 +152,7 @@ data Repl = Repl
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
--- >>> import Circuit.Category ((>>>))
+-- >>> import Circuit.Category ((.>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Loop (Loop (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
@@ -161,7 +161,7 @@ data Repl = Repl
 -- >>> let (outR, inR) = openRepl r
 -- >>> let Ends inU outU = open :: Ends (Kleisli IO) () ()
 -- >>> let send = Lift (Kleisli (\() -> pure ["ping"]))
--- >>> let turn = send >>> Lift (commit inR outU) >>> Lift (emit outR inU) :: Loop (,) (Kleisli IO) () [Text]
+-- >>> let turn = send .> Lift (commit inR outU) .> Lift (emit outR inU) :: Loop (,) (Kleisli IO) () [Text]
 -- >>> runKleisli (run turn) ()
 -- ["emit: hello"]
 openRepl :: Repl -> (Out (Kleisli IO) [Text], In (Kleisli IO) [Text])
@@ -229,7 +229,7 @@ replEnds r = par c e
 -- $setup
 -- >>> :set -XOverloadedStrings
 -- >>> import Circuit (run, par)
--- >>> import Circuit.Category ((>>>))
+-- >>> import Circuit.Category ((.>))
 -- >>> import Circuit.Ends (Ends (..), HasUnit (..), In (..), Out (..), close, commit, emit)
 -- >>> import Circuit.Loop (Loop (..))
 -- >>> import Control.Arrow (Kleisli (..), runKleisli)
