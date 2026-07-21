@@ -50,6 +50,7 @@ library
   exposed-modules:
     Cursor
     Circuit.Comm
+    Circuit.Comm.Framing
     Circuit.Repl
     Circuit.Repl.Turn
 

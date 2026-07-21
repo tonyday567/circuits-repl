@@ -60,8 +60,9 @@ import Control.Arrow (Kleisli (..), runKleisli)
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
 import Control.Exception (IOException, bracket, throwIO, try)
-import Control.Monad (unless, void, forM_)
+import Control.Monad (unless, void, forM_, when)
 import Cursor qualified as Cur
+import Data.Maybe (fromMaybe)
 import Data.ByteString qualified as BS
 import Data.IORef
 import Data.Text (Text)
@@ -106,7 +107,11 @@ data ReplConfig = ReplConfig
     replStdinPath  :: FilePath,
     replStdoutPath :: FilePath,
     replStderrPath :: FilePath,
-    replWorkingDir :: FilePath
+    replWorkingDir :: FilePath,
+    -- | Optional explicit cursor file for the stdout log. When 'Nothing',
+    -- the default @<log>.cursor@ (open) or @<log>.cursor-attach-<pid>@
+    -- (attach) is used.
+    replCursorPath :: Maybe FilePath
   }
   deriving (Show, Eq)
 
@@ -117,7 +122,8 @@ defaultReplConfig = ReplConfig
     replStdinPath  = "/tmp/repl-stdin",
     replStdoutPath = "/tmp/repl-stdout.md",
     replStderrPath = "/tmp/repl-stderr.md",
-    replWorkingDir = "."
+    replWorkingDir = ".",
+    replCursorPath = Nothing
   }
 
 -- ---------------------------------------------------------------------------
@@ -270,7 +276,8 @@ openProcessPorts cfg = do
   hClose stdoutH
   hClose stderrH
 
-  stdoutCursor <- Cur.newFile (cursorPath cfg)
+  let stdoutCursorFile = fromMaybe (cursorPath cfg) (replCursorPath cfg)
+  stdoutCursor <- Cur.newFile stdoutCursorFile
   Cur.set stdoutCursor 0
   stderrCursor <- Cur.newFile (stderrCursorPath cfg)
   Cur.set stderrCursor 0
@@ -296,12 +303,18 @@ attachProcessPorts :: ReplConfig -> IO (ProcessPorts [Text] [Text] [Text])
 attachProcessPorts cfg = do
   contentOut <- readLogContent (replStdoutPath cfg)
   contentErr <- readLogContent (replStderrPath cfg)
-  stdoutCursorFile <- attachCursorPath (replStdoutPath cfg)
+  stdoutCursorFile <- case replCursorPath cfg of
+    Just p  -> pure p
+    Nothing -> attachCursorPath (replStdoutPath cfg)
   stderrCursorFile <- attachCursorPath (replStderrPath cfg)
   stdoutCursor <- Cur.newFile stdoutCursorFile
-  Cur.seekEnd stdoutCursor (fst (splitComplete contentOut))
+  -- Only seek to end for a fresh cursor (position 0). An existing cursor
+  -- file should resume from its stored position.
+  outPos <- Cur.get stdoutCursor
+  when (outPos == 0) $ Cur.seekEnd stdoutCursor (fst (splitComplete contentOut))
   stderrCursor <- Cur.newFile stderrCursorFile
-  Cur.seekEnd stderrCursor (fst (splitComplete contentErr))
+  stderrPos <- Cur.get stderrCursor
+  when (stderrPos == 0) $ Cur.seekEnd stderrCursor (fst (splitComplete contentErr))
   lastOutP <- newIORef Nothing
   lastErrP <- newIORef Nothing
 
@@ -381,7 +394,8 @@ replOpenPty cfg = do
   (pty, ph) <- spawnWithPty Nothing True (replCommand cfg) (replArgs cfg) (100, 30)
   pumpTid  <- forkIO (pumpPtyToLog pty (replStdoutPath cfg))
 
-  cursor <- Cur.newFile (cursorPath cfg)
+  let cursorFile = fromMaybe (cursorPath cfg) (replCursorPath cfg)
+  cursor <- Cur.newFile cursorFile
   Cur.set cursor 0
   lastP  <- newIORef Nothing
 
@@ -410,7 +424,8 @@ replOpenCustom fcommit femit fclose =
 replOpenInject :: ReplConfig -> (Text -> IO ()) -> IO Repl
 replOpenInject cfg inject = do
   appendFile (replStdoutPath cfg) ""
-  cursor <- Cur.newFile (cursorPath cfg)
+  let cursorFile = fromMaybe (cursorPath cfg) (replCursorPath cfg)
+  cursor <- Cur.newFile cursorFile
   Cur.set cursor 0
   lastP  <- newIORef Nothing
   let commitAction ts = mapM_ inject ts

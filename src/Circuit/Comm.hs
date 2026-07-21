@@ -5,10 +5,10 @@
 -- >>> :set -XOverloadedStrings
 {- ORMOLU_ENABLE -}
 --
--- >>> frameMessage "hermes" "status check"
--- "[hermes] status check"
+-- >>> frameMessage "2026-07-21T14:30:00" "hermes" "status check"
+-- "[2026-07-21T14:30:00] hermes: status check"
 --
--- >>> parseMessage "[llm] found a type error in Foo.hs"
+-- >>> parseMessage "[2026-07-21T14:30:00] llm: found a type error in Foo.hs"
 -- Just ("llm","found a type error in Foo.hs")
 --
 -- === Usage
@@ -56,7 +56,7 @@
 --
 -- === Message format
 --
--- One message per line: @[sender] body@
+-- One message per line: @[timestamp] sender: body@.
 module Circuit.Comm
   ( -- * Configuration
     ChannelConfig (..),
@@ -71,6 +71,7 @@ module Circuit.Comm
     -- * Operations
     channelSend,
     channelRecv,
+    channelRecvRaw,
     channelRecvBlocking,
 
     -- * MusterRepl — channel as free dual 'Repl'
@@ -83,6 +84,7 @@ module Circuit.Comm
   )
 where
 
+import Circuit.Comm.Framing (formatNow, frameMessage, parseMessage)
 import Circuit.Repl
 import Control.Concurrent (threadDelay)
 import Control.Exception (onException)
@@ -103,6 +105,9 @@ data ChannelConfig = ChannelConfig
     chStdinPath :: FilePath,
     -- | Shared stdout log — the bus appends here, agents read from here.
     chStdoutPath :: FilePath,
+    -- | Shared stdout log cursor. When 'Nothing', the default
+    -- @<log>.cursor@ (open) or @<log>.cursor-attach-<pid>@ (attach) is used.
+    chCursorPath :: Maybe FilePath,
     -- | Bus process stderr.
     chStderrPath :: FilePath,
     -- | This agent's name (used as @[name]@ prefix on sent messages).
@@ -121,6 +126,7 @@ defaultChannelConfig :: Text -> ChannelConfig
 defaultChannelConfig name =
   ChannelConfig
     { chStdinPath = "/tmp/channel-stdin",
+      chCursorPath = Nothing,
       chStdoutPath = "/tmp/channel-stdout.md",
       chStderrPath = "/tmp/channel-stderr.md",
       chName = name,
@@ -141,7 +147,8 @@ toReplConfig cfg =
       replStdinPath = chStdinPath cfg,
       replStdoutPath = chStdoutPath cfg,
       replStderrPath = chStderrPath cfg,
-      replWorkingDir = chWorkingDir cfg
+      replWorkingDir = chWorkingDir cfg,
+      replCursorPath = chCursorPath cfg
     }
 
 -- ---------------------------------------------------------------------------
@@ -204,26 +211,35 @@ channelClose ch = do
 
 -- | Send a message to the channel.
 --
--- Frames as @[name] body@ and writes to the shared FIFO.
+-- Frames as @[timestamp] name: body@ and writes to the shared FIFO.
 -- The bus relays it to the log where all attached agents can read it.
 --
 -- Non-blocking — returns as soon as the write is flushed.
 channelSend :: Channel -> Text -> IO ()
 channelSend ch body = do
-  TIO.hPutStrLn (chWriteH ch) (frameMessage (chName (chCfg ch)) body)
+  ts <- formatNow
+  TIO.hPutStrLn (chWriteH ch) (frameMessage ts (chName (chCfg ch)) body)
   hFlush (chWriteH ch)
 
 -- | Receive all new messages since the last poll.
 --
 -- Reads the shared log and returns @(sender, body)@ pairs for each
 -- new line that parses as a framed message.  Lines that don't match
--- the @[sender] body@ format are silently dropped.
+-- the format are silently dropped. The timestamp is discarded; use
+-- 'Framing.parseMessage' directly if you need it.
 --
 -- Non-blocking — returns @[]@ if nothing new.
 channelRecv :: Channel -> IO [(Text, Text)]
 channelRecv ch = do
   ls <- replEmit (chRepl ch)
   pure $ mapMaybe parseMessage ls
+
+-- | Receive all new raw log lines since the last poll.
+--
+-- Returns the complete framed lines, including timestamps. Use this when
+-- you need the original log format rather than parsed sender/body pairs.
+channelRecvRaw :: Channel -> IO [Text]
+channelRecvRaw ch = replEmit (chRepl ch)
 
 -- | Block until new messages arrive, or the timeout fires.
 --
@@ -258,7 +274,7 @@ channelRecvBlocking ch timeoutUs = go 0 10000
 -- | Open a multi-agent channel and present it as a 'Repl'.
 --
 --   * __commit__ @ts@ — @mapM_ channelSend@ (each 'Text' is one body line;
---     framing @[name] body@ is applied by 'channelSend')
+--     framing @[timestamp] name: body@ is applied by 'channelSend')
 --   * __emit__ — 'channelRecv' bodies with __self-echo filtered__
 --     (messages from @chName@ are dropped, like muster watch exclude-own)
 --
@@ -288,31 +304,3 @@ channelAsRepl ch = do
       close = channelClose ch
   replOpenCustom commit emit close
 
--- | Frame a message with sender prefix.
---
--- >>> frameMessage "hermes" "status check"
--- "[hermes] status check"
-frameMessage :: Text -> Text -> Text
-frameMessage sender body = "[" <> sender <> "] " <> body
-
--- | Parse a framed message into @(sender, body)@.
---
--- >>> parseMessage "[llm] found a type error"
--- Just ("llm","found a type error")
---
--- >>> parseMessage "unframed text"
--- Nothing
-parseMessage :: Text -> Maybe (Text, Text)
-parseMessage t =
-  case T.stripPrefix "[" t of
-    Nothing -> Nothing
-    Just rest ->
-      case T.breakOn "] " rest of
-        (sender, body)
-          | T.null sender -> Nothing
-          | T.null body -> Nothing -- no "] " found
-          | otherwise ->
-              let body' = T.drop 2 body -- drop "] "
-               in if T.null body'
-                    then Nothing
-                    else Just (sender, body')
