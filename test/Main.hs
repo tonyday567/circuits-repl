@@ -18,6 +18,7 @@ main = do
   memOracle
   fileOracle
   parityOracle
+  truncOracle
   putStrLn "all green"
 
 assertEq :: (Eq a, Show a) => String -> a -> a -> IO ()
@@ -73,6 +74,23 @@ fileOracle =
     fromAlice <- pollFile c logPath
     assertEq "bob sees five" (["five"] :: [Text]) fromBob
     assertEq "alice sees five" (["five"] :: [Text]) fromAlice
+
+-- | A stale cursor (position beyond the current log length) resets to 0 so
+-- deleting or truncating a log does not leave the cursor permanently broken.
+truncOracle :: IO ()
+truncOracle =
+  withSystemTempDirectory "cursor-trunc" $ \dir -> do
+    putStrLn "trunc"
+    let curPath = dir </> ".cursor"
+        logPath = dir </> "log.md"
+    c <- newFile curPath
+    TIO.writeFile logPath "one\ntwo\nthree\n"
+    _ <- pollFile c logPath
+    TIO.writeFile logPath "alpha\nbeta\n"
+    got <- pollFile c logPath
+    assertEq "stale cursor replays current log" (["alpha", "beta"] :: [Text]) got
+    got2 <- pollFile c logPath
+    assertEq "then idempotent" ([] :: [Text]) got2
 
 -- | Same poll sequence on mem and file backends yields the same news.
 parityOracle :: IO ()

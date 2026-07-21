@@ -99,6 +99,10 @@ set = cursorSet
 --
 -- Idempotent on a frozen log: a second call with the same @xs@ yields @[]@.
 --
+-- If the cursor is past the end of the current content (for example because
+-- the log was deleted or truncated), it resets to @0@ and the current content
+-- is returned as new. This keeps cursors from becoming permanently stale.
+--
 -- >>> c <- newMem 0
 -- >>> pollLines c ["x" :: Text]
 -- ["x"]
@@ -108,7 +112,8 @@ pollLines :: Cursor -> [Text] -> IO [Text]
 pollLines c xs = do
   pos <- cursorGet c
   let total = length xs
-      news = drop pos xs
+      pos' = if pos > total then 0 else pos
+      news = drop pos' xs
   cursorSet c total
   pure news
 
