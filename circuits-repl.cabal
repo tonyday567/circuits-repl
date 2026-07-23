@@ -58,7 +58,7 @@ library
     aeson >=2.0 && <2.3,
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
-    circuits >=0.1.0.0 && <0.3,
+    circuits >=0.1.0.0 && <0.4,
     containers >=0.6 && <0.9,
     directory >=1.3 && <1.4,
     filepath >=1.4 && <1.6,
@@ -118,7 +118,7 @@ executable cabal-repl-split
   main-is: cabal-repl-split.hs
   build-depends:
     base >=4.18 && <5,
-    circuits >=0.1.0.0 && <0.3,
+    circuits >=0.1.0.0 && <0.4,
     circuits-repl,
     directory >=1.3 && <1.4,
     filepath >=1.4 && <1.6,
@@ -149,7 +149,7 @@ executable cabal-repl-explore
   main-is: cabal-repl-explore.hs
   build-depends:
     base >=4.18 && <5,
-    circuits >=0.1.0.0 && <0.3,
+    circuits >=0.1.0.0 && <0.4,
     circuits-repl,
     directory >=1.3 && <1.4,
     filepath >=1.4 && <1.6,
@@ -165,7 +165,7 @@ executable agent-repl-loop
   main-is: agent-repl-loop.hs
   build-depends:
     base >=4.18 && <5,
-    circuits >=0.1.0.0 && <0.3,
+    circuits >=0.1.0.0 && <0.4,
     circuits-repl,
     directory >=1.3 && <1.4,
     filepath >=1.4 && <1.6,
@@ -196,7 +196,7 @@ executable dual-spike
   main-is: dual-spike.hs
   build-depends:
     base >=4.18 && <5,
-    circuits >=0.1.0.0 && <0.3,
+    circuits >=0.1.0.0 && <0.4,
     circuits-repl,
     directory >=1.3 && <1.4,
     filepath >=1.4 && <1.6,
