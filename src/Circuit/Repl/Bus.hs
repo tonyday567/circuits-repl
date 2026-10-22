@@ -29,11 +29,12 @@ module Circuit.Repl.Bus
   )
 where
 
-import Circuit.Repl (Repl, Reply (..), mkRepl, step)
+import Circuit.Machine (FBody (..))
+import Circuit.Repl (Repl, turn)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Prelude hiding (init)
+import Prelude
 
 -- | A seat name.
 type Name = Text
@@ -80,37 +81,46 @@ data Seat = Seat
 -- not the body text. This mock answers thread-starters only;
 -- multi-turn threading is future work.
 ackSeat :: Name -> Seat
-ackSeat me = Seat me (mkRepl newSeatState absorb utter) newSeatState
+ackSeat me = Seat me repl newSeatState
   where
-    absorb s l = s {cursor = cursor s + 1, lastPost = Just l}
-    utter s = case lastPost s of
-      Nothing -> Done
-      Just l ->
-        let p = loggedPost l
-         in if postTo p == me && isNothing (postThread p)
-              then
-                Said
-                  Post
-                    { postFrom = me,
-                      postTo = postFrom p,
-                      postBody = "ack " <> T.pack (show (cursor s)),
-                      postThread = Just (loggedId l)
-                    }
-              else Done
+    repl =
+      FBody
+        { begin = const newSeatState,
+          step = \(s, l) -> s {cursor = cursor s + 1, lastPost = Just l},
+          extract = \s -> case lastPost s of
+            Nothing -> Nothing
+            Just l ->
+              let p = loggedPost l
+               in if postTo p == me && isNothing (postThread p)
+                    then
+                      Just
+                        Post
+                          { postFrom = me,
+                            postTo = postFrom p,
+                            postBody = "ack " <> T.pack (show (cursor s)),
+                            postThread = Just (loggedId l)
+                          }
+                    else Nothing
+        }
 
 -- | A seat that never prints. Its posts enter the log only via the
 -- external script.
 runnerSeat :: Name -> Seat
-runnerSeat me = Seat me (mkRepl newSeatState absorb (const Done)) newSeatState
+runnerSeat me = Seat me repl newSeatState
   where
-    absorb s l = s {cursor = cursor s + 1, lastPost = Just l}
+    repl =
+      FBody
+        { begin = const newSeatState,
+          step = \(s, l) -> s {cursor = cursor s + 1, lastPost = Just l},
+          extract = const Nothing
+        }
 
 -- | The outcome of a run: the final log, every turn's output in order
--- ('Done's included), the final seats, and whether quiescence was
+-- ('Nothing's included), the final seats, and whether quiescence was
 -- reached within fuel.
 data BusResult = BusResult
   { busLog :: [Logged],
-    busReplies :: [(Name, Reply Post)],
+    busReplies :: [(Name, Maybe Post)],
     busSeats :: [Seat],
     busRested :: Bool
   }
@@ -118,7 +128,7 @@ data BusResult = BusResult
 -- | Run a roster of seats over a scripted log.
 --
 -- Each pass drains every seat in roster order; a seat steps once per
--- undelivered entry in log order; 'Said' posts are assigned an id and
+-- undelivered entry in log order; 'Just' posts are assigned an id and
 -- appended immediately, so later seats in the same pass see them. The
 -- loop stops when every cursor is at the log end. A pass with pending
 -- work strictly advances a cursor or the log, so the loop either rests
@@ -149,9 +159,9 @@ runBus fuel seats0 script = go fuel seats0 (stamp 0 script) []
        in foldl deliver (seat, lg, replies) pending
       where
         deliver (s, lg', as) l =
-          let (st', reply) = step (seatRepl s) (seatState s, l)
+          let (st', reply) = turn (seatRepl s) (seatState s, l)
            in case reply of
-                Said p ->
+                Just p ->
                   let l' = Logged (length lg') p
                    in (s {seatState = st'}, lg' ++ [l'], (seatName s, reply) : as)
-                Done -> (s {seatState = st'}, lg', (seatName s, reply) : as)
+                Nothing -> (s {seatState = st'}, lg', (seatName s, reply) : as)

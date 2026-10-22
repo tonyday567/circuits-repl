@@ -9,10 +9,10 @@ module Axioma.Bus
 where
 
 import Axioma.Common (Verbosity (..), checkV)
-import Circuit.Repl (Reply (..))
 import Circuit.Repl.Bus
 import Control.Monad (when)
-import Prelude hiding (init)
+import Data.Maybe (isJust, isNothing)
+import Prelude
 
 roster :: [Seat]
 roster = [runnerSeat "runner", ackSeat "k1", ackSeat "k2"]
@@ -21,7 +21,7 @@ hello :: Post
 hello = Post "runner" "k1" "hi" Nothing
 
 -- | The one-post conversation: k1 answers (citing its fresh cursor
--- and the parent id), every seat drains the answer and is done, all
+-- and the parent id), every seat drains the answer and is quiet, all
 -- cursors rest at log end.
 onePost :: BusResult
 onePost = runBus 10 roster [hello]
@@ -37,13 +37,13 @@ busTopic verbosity = do
       -- address decisions are local: k2's cursor rests at log end (it
       -- saw every entry) and it never printed. Counterexample:
       -- bus-side filtering leaves k2's cursor behind; a broadcast
-      -- answer adds a k2 Said.
+      -- answer adds a k2 Just.
       checkV verbosity "address decisions are local: k2 saw everything, printed nothing" $
         let k2 = busSeats onePost !! 2
          in cursor (seatState k2) == length (busLog onePost)
-              && not (any isK2Said (busReplies onePost)),
-      -- the answer cites the fresh cursor — the post-commit
-      -- observation. Counterexample: a pre-commit emit says "ack 0".
+              && not (any isK2Print (busReplies onePost)),
+      -- the answer cites the fresh cursor — the post-step
+      -- observation. Counterexample: a pre-step extract says "ack 0".
       checkV verbosity "the answer cites the fresh state" $
         case busLog onePost !! 1 of
           Logged _ p -> postBody p == "ack 1",
@@ -53,7 +53,7 @@ busTopic verbosity = do
       checkV verbosity "the answer cites its parent" $
         case busLog onePost !! 1 of
           Logged _ p -> postThread p == Just 0 && postTo p == "runner" && postFrom p == "k1",
-      -- the full conversation, pinned exactly: log, replies (Dones
+      -- the full conversation, pinned exactly: log, replies (Nothings
       -- included), and quiescence. Counterexample: any driver that
       -- drops, reorders, or fabricates a turn breaks the trace.
       checkV verbosity "the one-post conversation, exact" $
@@ -63,12 +63,12 @@ busTopic verbosity = do
                  Logged 1 (Post "k1" "runner" "ack 1" (Just 0))
                ]
           && busReplies onePost
-            == [ ("runner", Done),
-                 ("k1", Said (Post "k1" "runner" "ack 1" (Just 0))),
-                 ("k2", Done),
-                 ("k2", Done),
-                 ("runner", Done),
-                 ("k1", Done)
+            == [ ("runner", Nothing),
+                 ("k1", Just (Post "k1" "runner" "ack 1" (Just 0))),
+                 ("k2", Nothing),
+                 ("k2", Nothing),
+                 ("runner", Nothing),
+                 ("k1", Nothing)
                ],
       -- the cascade stop is the thread edge, not the body text: the
       -- same body is answered when it starts a thread and ignored
@@ -81,11 +81,11 @@ busTopic verbosity = do
          in length (busLog starter) == 2
               && busRested threaded
               && length (busLog threaded) == 1
-              && all ((== Done) . snd) (busReplies threaded),
+              && all (isNothing . snd) (busReplies threaded),
       -- the runner seat never prints. Counterexample: a runner-shaped
-      -- auto-reply adds a Said from "runner".
-      checkV verbosity "the runner seat is always done" $
-        not (any isRunnerSaid (busReplies onePost)),
+      -- auto-reply adds a Just from "runner".
+      checkV verbosity "the runner seat never prints" $
+        not (any isRunnerPrint (busReplies onePost)),
       -- state continuity through the bus: two posts, two distinct
       -- answers, each citing its own parent. Counterexample: a
       -- stateless seat says "ack 1" twice.
@@ -101,7 +101,7 @@ busTopic verbosity = do
                    ]
     ]
   where
-    isK2Said ("k2", Said _) = True
-    isK2Said _ = False
-    isRunnerSaid ("runner", Said _) = True
-    isRunnerSaid _ = False
+    isK2Print ("k2", r) = isJust r
+    isK2Print _ = False
+    isRunnerPrint ("runner", r) = isJust r
+    isRunnerPrint _ = False
