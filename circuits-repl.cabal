@@ -1,0 +1,64 @@
+cabal-version: 3.0
+name: circuits-repl
+version: 0.1.0.0
+license: BSD-3-Clause
+copyright: Tony Day (c) 2026
+category: control
+author: Tony Day
+maintainer: tonyday567@gmail.com
+synopsis: repl-loop agents: speech acts, seats, and a mock bus
+description:
+  An agent is a repl loop: read, evaluate, print, loop. circuits-repl
+  builds that spec on circuits Body — factored commit and emit legs,
+  speech acts with structural silence, race and await as seat
+  compositions, and a free-agent-like mock bus as the first oracle
+  subject.
+
+build-type: Simple
+tested-with:
+  ghc ==9.10.1
+  ghc ==9.12.2
+  ghc ==9.14.1
+
+extra-doc-files:
+  readme.md
+
+common ghc-options-stanza
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wpartial-fields
+    -Wredundant-constraints
+
+library
+  import: ghc-options-stanza
+  default-language: GHC2024
+  hs-source-dirs: src
+  exposed-modules:
+    Circuit.Repl
+    Circuit.Repl.Bus
+
+  build-depends:
+    base >=4.20 && <5,
+    circuits,
+    text >=2.0 && <2.2,
+
+executable circuits-repl-axioma
+  import: ghc-options-stanza
+  default-language: GHC2024
+  main-is: circuits-repl-axioma.hs
+  hs-source-dirs: app
+  other-modules:
+    Axioma.Bus
+    Axioma.Common
+    Axioma.Repl
+
+  build-depends:
+    base >=4.20 && <5,
+    circuits,
+    circuits-repl,
+    optparse-applicative >=0.17 && <0.20,
+    text >=2.0 && <2.2,
