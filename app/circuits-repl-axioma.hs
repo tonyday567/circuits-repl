@@ -113,7 +113,7 @@ runTopicLevel topic = do
 runPackage :: Topic -> IO ()
 runPackage topic = do
   results <- case topic of
-    All -> concat <$> mapM (\t -> runTopic t Package) allTopics
+    All -> concat <$> mapM (`runTopic` Package) allTopics
     t -> runTopic t Package
   printCircle (and results)
   putStrLn ""

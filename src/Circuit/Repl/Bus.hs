@@ -87,19 +87,16 @@ ackSeat me = Seat me (mkRepl newSeatState absorb utter) newSeatState
       Nothing -> StandDown
       Just l ->
         let p = loggedPost l
-         in if postTo p /= me
+         in if postTo p /= me || "ack " `T.isPrefixOf` postBody p
               then StandDown
               else
-                if "ack " `T.isPrefixOf` postBody p
-                  then StandDown
-                  else
-                    Said
-                      Post
-                        { postFrom = me,
-                          postTo = postFrom p,
-                          postBody = "ack " <> T.pack (show (cursor s)),
-                          postThread = Just (loggedId l)
-                        }
+                Said
+                  Post
+                    { postFrom = me,
+                      postTo = postFrom p,
+                      postBody = "ack " <> T.pack (show (cursor s)),
+                      postThread = Just (loggedId l)
+                    }
 
 -- | The runner seat: always stands down. Its prints enter the log only
 -- via the external script — neutrality made typable.

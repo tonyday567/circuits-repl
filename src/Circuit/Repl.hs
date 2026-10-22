@@ -55,8 +55,8 @@ type Repl s i o = Body (,) (,) s s (->) i (Speech o)
 mkRepl :: s -> (s -> i -> s) -> (s -> Speech o) -> Repl s i o
 mkRepl s0 absorb utter =
   Body
-    { init = \i -> absorb s0 i,
-      commit = \(s, i) -> absorb s i,
+    { init = absorb s0,
+      commit = uncurry absorb,
       emit = \s -> (s, utter s)
     }
 

@@ -89,8 +89,8 @@ replTopic verbosity = do
             rightWins bias =
               turn (race bias muteRepl countRepl) (((0, (0, Nothing)), (0, (0, Nothing))), 5)
                 == (((0, (1, Just 5)), (0, (1, Just 5))), Said (1, 5))
-         in and (leftWins <$> [LeftFirst, RightFirst])
-              && and (rightWins <$> [LeftFirst, RightFirst]),
+         in all leftWins [LeftFirst, RightFirst]
+              && all rightWins [LeftFirst, RightFirst],
       -- race, both speak: the explicit bias is the whole decision.
       -- Counterexample: a hidden left preference turns the RightFirst
       -- clause red; swapped payload order turns the LeftFirst clause red.
