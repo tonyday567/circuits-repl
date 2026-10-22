@@ -1,19 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | A free-agent-like mock bus: an append-only log as the shared
--- rendezvous, and seats that are repl loops over it.
+-- | A mock of a free-agent-style bus: an append-only log, and seats
+-- that are repl loops over it.
 --
--- The shape is free-agent's, kept honest at mock scale:
---
--- * The log is shared — seats see every post, judge addressedness
---   locally, and stand down on the unaddressed. There is no bus-side
---   filtering.
--- * The bus is the only stamper. Seats never stamp; a 'Said' post is
---   stamped on append.
--- * Addressing is direct. There is no broadcast sentinel.
--- * Quiescence is Rest — a decidable fixpoint (every cursor at log
---   end), asserted by the oracles. Fuel bounds the loop; it is not a
---   timeout inference.
+-- * Seats see every log entry and decide locally whether it is
+--   addressed to them; there is no bus-side filtering.
+-- * The bus assigns ids on append ('Logged'); seats never assign ids.
+-- * Addressing is direct; there is no broadcast.
+-- * The driver loops until every seat's cursor is at the log end —
+--   quiescence as a fixpoint, not a timeout. Fuel only bounds the
+--   loop; 'busRested' reports which of the two happened.
 module Circuit.Repl.Bus
   ( -- * posts
     Name,
@@ -33,7 +29,8 @@ module Circuit.Repl.Bus
   )
 where
 
-import Circuit.Repl (Repl, Speech (..), mkRepl, turn)
+import Circuit.Repl (Repl, Reply (..), mkRepl, step)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Prelude hiding (init)
@@ -41,7 +38,8 @@ import Prelude hiding (init)
 -- | A seat name.
 type Name = Text
 
--- | A bus post: direct addressing and a thread edge to the parent.
+-- | A bus post: direct addressing, and a thread edge to the parent
+-- post's id when the post is a reply.
 data Post = Post
   { postFrom :: Name,
     postTo :: Name,
@@ -50,15 +48,15 @@ data Post = Post
   }
   deriving (Eq, Show)
 
--- | A post stamped by the bus — the only stamper.
+-- | A post with its bus-assigned id.
 data Logged = Logged
   { loggedId :: Int,
     loggedPost :: Post
   }
   deriving (Eq, Show)
 
--- | A seat's monologue: a cursor into the shared log, and the post
--- absorbed this turn for the print leg to read (the fresh channel).
+-- | Seat state: a cursor into the shared log, and the entry absorbed
+-- this turn for the utter function to read.
 data SeatState = SeatState
   { cursor :: Int,
     lastPost :: Maybe Logged
@@ -75,21 +73,22 @@ data Seat = Seat
     seatState :: SeatState
   }
 
--- | The mock repl seat: absorbs every post it is shown (the cursor
--- advances — it saw the log), and prints an ack citing the parent
--- thread when addressed — unless the post is itself an ack. An ack
--- never acks an ack: the cascade is impossible by construction.
+-- | The mock repl seat. It answers a post when the post is addressed
+-- to it and starts a thread ('postThread' is 'Nothing'); the answer
+-- carries a thread edge to the post's id. Since every answer carries
+-- an edge, no answer is ever answered — the cascade stop is the edge,
+-- not the body text. This mock answers thread-starters only;
+-- multi-turn threading is future work.
 ackSeat :: Name -> Seat
 ackSeat me = Seat me (mkRepl newSeatState absorb utter) newSeatState
   where
     absorb s l = s {cursor = cursor s + 1, lastPost = Just l}
     utter s = case lastPost s of
-      Nothing -> StandDown
+      Nothing -> Done
       Just l ->
         let p = loggedPost l
-         in if postTo p /= me || "ack " `T.isPrefixOf` postBody p
-              then StandDown
-              else
+         in if postTo p == me && isNothing (postThread p)
+              then
                 Said
                   Post
                     { postFrom = me,
@@ -97,61 +96,62 @@ ackSeat me = Seat me (mkRepl newSeatState absorb utter) newSeatState
                       postBody = "ack " <> T.pack (show (cursor s)),
                       postThread = Just (loggedId l)
                     }
+              else Done
 
--- | The runner seat: always stands down. Its prints enter the log only
--- via the external script — neutrality made typable.
+-- | A seat that never prints. Its posts enter the log only via the
+-- external script.
 runnerSeat :: Name -> Seat
-runnerSeat me = Seat me (mkRepl newSeatState absorb (const StandDown)) newSeatState
+runnerSeat me = Seat me (mkRepl newSeatState absorb (const Done)) newSeatState
   where
     absorb s l = s {cursor = cursor s + 1, lastPost = Just l}
 
--- | What a run produced: the final log, every act in order (stand-downs
--- included — the trace is the oracle subject), the final seats, and
--- whether quiescence was reached within fuel.
+-- | The outcome of a run: the final log, every turn's output in order
+-- ('Done's included), the final seats, and whether quiescence was
+-- reached within fuel.
 data BusResult = BusResult
   { busLog :: [Logged],
-    busActs :: [(Name, Speech Post)],
+    busReplies :: [(Name, Reply Post)],
     busSeats :: [Seat],
     busRested :: Bool
   }
 
--- | Run a roster of seats over a scripted log to quiescence.
+-- | Run a roster of seats over a scripted log.
 --
--- Each pass drains every seat in roster order (the named
--- representative); a seat turns once per undelivered post in log order;
--- 'Said' posts are stamped and appended immediately, so later seats in
--- the same pass see them. Quiescent when every cursor is at log end —
--- a pass with work strictly advances a cursor or the log, so the loop
--- either rests or burns fuel.
+-- Each pass drains every seat in roster order; a seat steps once per
+-- undelivered entry in log order; 'Said' posts are assigned an id and
+-- appended immediately, so later seats in the same pass see them. The
+-- loop stops when every cursor is at the log end. A pass with pending
+-- work strictly advances a cursor or the log, so the loop either rests
+-- or exhausts fuel.
 runBus :: Int -> [Seat] -> [Post] -> BusResult
 runBus fuel seats0 script = go fuel seats0 (stamp 0 script) []
   where
     stamp _ [] = []
     stamp n (p : ps) = Logged n p : stamp (n + 1) ps
 
-    go f seats lg acts
-      | all (rested lg) seats = BusResult lg (reverse acts) seats True
-      | f <= 0 = BusResult lg (reverse acts) seats False
+    go f seats lg replies
+      | all (rested lg) seats = BusResult lg (reverse replies) seats True
+      | f <= 0 = BusResult lg (reverse replies) seats False
       | otherwise =
-          let (seats', lg', acts') = drainPass seats lg acts
-           in go (f - 1) seats' lg' acts'
+          let (seats', lg', replies') = drainPass seats lg replies
+           in go (f - 1) seats' lg' replies'
 
     rested lg s = cursor (seatState s) >= length lg
 
-    drainPass seats lg acts =
+    drainPass seats lg replies =
       foldl
         (\(ss, lg', as) seat -> let (s', lg'', as') = drainSeat lg' as seat in (ss ++ [s'], lg'', as'))
-        ([], lg, acts)
+        ([], lg, replies)
         seats
 
-    drainSeat lg acts seat =
+    drainSeat lg replies seat =
       let pending = drop (cursor (seatState seat)) lg
-       in foldl step (seat, lg, acts) pending
+       in foldl deliver (seat, lg, replies) pending
       where
-        step (s, lg', as) l =
-          let (st', act) = turn (seatRepl s) (seatState s, l)
-           in case act of
+        deliver (s, lg', as) l =
+          let (st', reply) = step (seatRepl s) (seatState s, l)
+           in case reply of
                 Said p ->
                   let l' = Logged (length lg') p
-                   in (s {seatState = st'}, lg' ++ [l'], (seatName s, act) : as)
-                StandDown -> (s {seatState = st'}, lg', (seatName s, act) : as)
+                   in (s {seatState = st'}, lg' ++ [l'], (seatName s, reply) : as)
+                Done -> (s {seatState = st'}, lg', (seatName s, reply) : as)
