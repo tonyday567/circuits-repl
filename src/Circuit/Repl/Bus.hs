@@ -29,7 +29,7 @@ module Circuit.Repl.Bus
   )
 where
 
-import Circuit.Machine (FBody (..))
+import Circuit.Machine (FoldBody (..))
 import Circuit.Repl (Repl, turn)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
@@ -84,7 +84,7 @@ ackSeat :: Name -> Seat
 ackSeat me = Seat me repl newSeatState
   where
     repl =
-      FBody
+      FoldBody
         { begin = const newSeatState,
           step = \(s, l) -> s {cursor = cursor s + 1, lastPost = Just l},
           extract = \s -> case lastPost s of
@@ -109,7 +109,7 @@ runnerSeat :: Name -> Seat
 runnerSeat me = Seat me repl newSeatState
   where
     repl =
-      FBody
+      FoldBody
         { begin = const newSeatState,
           step = \(s, l) -> s {cursor = cursor s + 1, lastPost = Just l},
           extract = const Nothing

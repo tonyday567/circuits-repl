@@ -1,6 +1,6 @@
 -- | Repl-loop agents.
 --
--- An agent is a repl loop: read, evaluate, print, loop. As an 'FBody':
+-- An agent is a repl loop: read, evaluate, print, loop. As a 'FoldBody':
 -- begin is the repl's birth (a fixed newborn state — a seat's birth is
 -- prior to any input), step is read+evaluate folded into the channel,
 -- extract is print, reading the fresh channel.
@@ -30,30 +30,30 @@ module Circuit.Repl
   )
 where
 
-import Circuit.Machine (FBody (..))
+import Circuit.Machine (FoldBody (..))
 import Circuit.Tensor (Bias (..))
 
 -- | A repl-loop agent over pure functions: a fixed newborn state,
 -- state @s@ on the channel wire, input @i@, at most one payload about
--- @o@ per turn. Construct with the 'FBody' record directly.
-type Repl s i o = FBody (,) s (->) i (Maybe o)
+-- @o@ per turn. Construct with the 'FoldBody' record directly.
+type Repl s i o = FoldBody (,) s (->) i (Maybe o)
 
 -- | One turn, fused: fold the input in, print from the fresh channel.
 -- 'begin' is not part of the tick — a mid-session turn works on a
 -- state that already exists.
 --
--- This is 'fuseFBody''s tick inlined: @copy .> tensor id e@ duplicates
+-- This is 'fuseFoldBody''s tick inlined: @copy .> tensor id e@ duplicates
 -- the fresh channel for the extract leg, which at @(->)@ is
--- @\(s,i) -> let s' = k (s,i) in (s', e s')@. 'fuseFBody' itself asks
+-- @\(s,i) -> let s' = k (s,i) in (s', e s')@. 'fuseFoldBody' itself asks
 -- 'Copy' of the channel, and 'Copy' at @(->)@ is a closed per-type
 -- instance set — it cannot cover an abstract @s@.
 turn :: Repl s i o -> (s, i) -> (s, Maybe o)
-turn (FBody _ k e) (s, i) = let s' = k (s, i) in (s', e s')
+turn (FoldBody _ k e) (s, i) = let s' = k (s, i) in (s', e s')
 
 -- | A full session from birth: 'begin' seeds the channel, the fused
 -- step iterates. States are kept.
 runRepl :: Repl s i o -> [i] -> [(s, Maybe o)]
-runRepl r@(FBody b _ _) = go (b ())
+runRepl r@(FoldBody b _ _) = go (b ())
   where
     go _ [] = []
     go s (i : is) = let res@(s', _) = turn r (s, i) in res : go s' is
@@ -69,8 +69,8 @@ await ::
   Repl s1 i o ->
   Repl s2 i o ->
   Repl (s1, s2) i (Maybe o, Maybe o)
-await (FBody b1 k1 e1) (FBody b2 k2 e2) =
-  FBody
+await (FoldBody b1 k1 e1) (FoldBody b2 k2 e2) =
+  FoldBody
     (\() -> (b1 (), b2 ()))
     (\((s1, s2), i) -> (k1 (s1, i), k2 (s2, i)))
     ( \(s1, s2) ->
@@ -94,8 +94,8 @@ race ::
   Repl s1 i o ->
   Repl s2 i o ->
   Repl (s1, s2) i o
-race bias (FBody b1 k1 e1) (FBody b2 k2 e2) =
-  FBody
+race bias (FoldBody b1 k1 e1) (FoldBody b2 k2 e2) =
+  FoldBody
     (\() -> (b1 (), b2 ()))
     (\((s1, s2), i) -> (k1 (s1, i), k2 (s2, i)))
     ( \(s1, s2) ->

@@ -11,7 +11,7 @@ module Axioma.Repl
 where
 
 import Axioma.Common (Verbosity (..), checkV)
-import Circuit.Machine (FBody (..))
+import Circuit.Machine (FoldBody (..))
 import Circuit.Repl
 import Circuit.Tensor (Bias (..))
 import Control.Monad (when)
@@ -23,7 +23,7 @@ import Prelude
 -- previous input.
 countRepl :: Repl (Int, Maybe Int) Int (Int, Int)
 countRepl =
-  FBody
+  FoldBody
     { begin = const (0, Nothing),
       step = \((n, _), i) -> (n + 1, Just i),
       extract = \(n, mi) -> (n,) <$> mi
@@ -31,11 +31,11 @@ countRepl =
 
 -- | Never prints; the step still counts.
 muteRepl :: Repl Int Int (Int, Int)
-muteRepl = FBody (const 0) (\(s, _) -> s + 1) (const Nothing)
+muteRepl = FoldBody (const 0) (\(s, _) -> s + 1) (const Nothing)
 
 -- | Always prints; the payload differs from 'countRepl's.
 chatRepl :: Repl Int Int (Int, Int)
-chatRepl = FBody (const 0) (\(s, _) -> s + 1) (\s -> Just (s, 0))
+chatRepl = FoldBody (const 0) (\(s, _) -> s + 1) (\s -> Just (s, 0))
 
 replTopic :: Verbosity -> IO [Bool]
 replTopic verbosity = do
