@@ -40,6 +40,8 @@ library
   exposed-modules:
     Circuit.Repl
     Circuit.Repl.Bus
+    Circuit.Repl.Transform
+    Circuit.Repl.Zoo
 
   build-depends:
     base >=4.20 && <5,
@@ -55,6 +57,7 @@ executable circuits-repl-axioma
     Axioma.Bus
     Axioma.Common
     Axioma.Repl
+    Axioma.Transform
 
   build-depends:
     base >=4.20 && <5,

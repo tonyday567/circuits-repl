@@ -3,6 +3,7 @@ module Main (main) where
 import Axioma.Bus (busTopic)
 import Axioma.Common (Verbosity (..))
 import Axioma.Repl (replTopic)
+import Axioma.Transform (transformTopic)
 import Options.Applicative
 import Prelude
 
@@ -10,17 +11,20 @@ data Topic
   = All
   | Repl
   | Bus
+  | Transform
   deriving (Show, Eq, Bounded, Enum)
 
 topicName :: Topic -> String
 topicName All = "all"
 topicName Repl = "repl"
 topicName Bus = "bus"
+topicName Transform = "transform"
 
 topicDesc :: Topic -> String
 topicDesc All = "run all topics"
 topicDesc Repl = "repl oracles: the loop, speech acts, race and await"
 topicDesc Bus = "bus oracles: stamper, addressing, threads, rest"
+topicDesc Transform = "transform oracles: batching, queues, idle, wiring"
 
 topicParser :: Parser Topic
 topicParser =
@@ -72,10 +76,11 @@ opts =
 runTopic :: Topic -> Verbosity -> IO [Bool]
 runTopic Repl = replTopic
 runTopic Bus = busTopic
+runTopic Transform = transformTopic
 runTopic All = error "runTopic All is handled by the dispatcher"
 
 allTopics :: [Topic]
-allTopics = [Repl, Bus]
+allTopics = [Repl, Bus, Transform]
 
 greenCircle :: String
 greenCircle = "🟢"
