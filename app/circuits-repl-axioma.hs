@@ -2,8 +2,10 @@ module Main (main) where
 
 import Axioma.Bus (busTopic)
 import Axioma.Common (Verbosity (..))
+import Axioma.Process (processTopic)
 import Axioma.Repl (replTopic)
 import Axioma.Transform (transformTopic)
+import Axioma.Zoo (ghciTopic, zooTopic)
 import Options.Applicative
 import Prelude
 
@@ -12,6 +14,8 @@ data Topic
   | Repl
   | Bus
   | Transform
+  | Zoo
+  | Process
   deriving (Show, Eq, Bounded, Enum)
 
 topicName :: Topic -> String
@@ -19,12 +23,16 @@ topicName All = "all"
 topicName Repl = "repl"
 topicName Bus = "bus"
 topicName Transform = "transform"
+topicName Zoo = "zoo"
+topicName Process = "process"
 
 topicDesc :: Topic -> String
 topicDesc All = "run all topics"
 topicDesc Repl = "repl oracles: the loop, speech acts, race and await"
 topicDesc Bus = "bus oracles: stamper, addressing, threads, rest"
 topicDesc Transform = "transform oracles: batching, queues, idle, wiring"
+topicDesc Zoo = "zoo oracles: the LSP row and its print timing"
+topicDesc Process = "process oracles: a persistent real cabal REPL on a scratch bus"
 
 topicParser :: Parser Topic
 topicParser =
@@ -77,10 +85,12 @@ runTopic :: Topic -> Verbosity -> IO [Bool]
 runTopic Repl = replTopic
 runTopic Bus = busTopic
 runTopic Transform = transformTopic
+runTopic Zoo = \v -> (++) <$> zooTopic v <*> ghciTopic v
+runTopic Process = processTopic
 runTopic All = error "runTopic All is handled by the dispatcher"
 
 allTopics :: [Topic]
-allTopics = [Repl, Bus, Transform]
+allTopics = [Repl, Bus, Transform, Zoo, Process]
 
 greenCircle :: String
 greenCircle = "🟢"
