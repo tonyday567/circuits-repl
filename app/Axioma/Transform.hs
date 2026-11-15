@@ -9,7 +9,6 @@ module Axioma.Transform
 where
 
 import Axioma.Common (Verbosity (..), checkV)
-import Circuit.Machine (FoldBody (..))
 import Circuit.Repl
 import Circuit.Repl.Transform
 import Control.Monad (when)
@@ -18,29 +17,27 @@ import Prelude
 
 countRepl :: Repl (Int, Maybe Int) Int (Int, Int)
 countRepl =
-  FoldBody
-    { begin = const (0, Nothing),
-      step = \((n, _), i) -> (n + 1, Just i),
-      extract = \(n, mi) -> (n,) <$> mi
-    }
+  fixedBirth
+    (const (0, Nothing))
+    (\((n, _), i) -> (n + 1, Just i))
+    (\(n, mi) -> (n,) <$> mi)
 
 quietEverySecond :: Repl (Int, Maybe Int) Int (Int, Int)
 quietEverySecond =
-  FoldBody
-    { begin = const (0, Nothing),
-      step = \((n, _), i) -> (n + 1, Just i),
-      extract = \(n, mi) -> if even n then Nothing else (n,) <$> mi
-    }
+  fixedBirth
+    (const (0, Nothing))
+    (\((n, _), i) -> (n + 1, Just i))
+    (\(n, mi) -> if even n then Nothing else (n,) <$> mi)
 
 muteRepl :: Repl Int Int (Int, Int)
-muteRepl = FoldBody (const 0) (\(s, _) -> s + 1) (const Nothing)
+muteRepl = fixedBirth (const 0) (\(s, _) -> s + 1) (const Nothing)
 
 chatRepl :: Repl Int Int (Int, Int)
-chatRepl = FoldBody (const 0) (\(s, _) -> s + 1) (\s -> Just (s, 0))
+chatRepl = fixedBirth (const 0) (\(s, _) -> s + 1) (\s -> Just (s, 0))
 
 listRepl :: Repl Int Int [Int]
 listRepl =
-  FoldBody
+  fixedBirth
     (const 0)
     (\(s, _) -> s + 1)
     ( \case
@@ -63,14 +60,14 @@ transformTopic verbosity = do
             (s2, o2) = turn r (s1, 20)
             (s3, o3) = turn r (s2, 30)
             os = catMaybes [o1, o2, o3]
-         in turn (batchIn r) ((s0, [(-1, -1)]), [10, 20, 30])
+         in turn (batchIn (const (0, Nothing)) r) ((s0, [(-1, -1)]), [10, 20, 30])
               == ((s3, os), Just os),
       -- Empty and all-quiet batches have an evaluated empty collection, and
       -- all-quiet inputs still advance every source state.
       checkV verbosity "batchIn represents empty and all-quiet batches as Just empty" $
-        turn (batchIn muteRepl) ((0, [(0, 0)]), [])
+        turn (batchIn (const 0) muteRepl) ((0, [(0, 0)]), [])
           == ((0, []), Just [])
-          && turn (batchIn muteRepl) ((0, [(0, 0)]), [7, 8])
+          && turn (batchIn (const 0) muteRepl) ((0, [(0, 0)]), [7, 8])
             == ((2, []), Just []),
       -- Include the pending tail in the observation. Dropping that tail or
       -- advancing a different underlying state breaks the flattened-stream
@@ -105,17 +102,17 @@ transformTopic verbosity = do
       -- Just input delegates exactly to the source turn; only the trigger bit
       -- is added to its resulting channel.
       checkV verbosity "idleable Just input is exactly the source turn" $
-        turn (idleable countRepl) (((0, Nothing), False), Just 5)
+        turn (idleable (const (0, Nothing)) countRepl) (((0, Nothing), False), Just 5)
           == (((1, Just 5), True), Just (1, 5)),
       -- Idle after a payload suppresses extract without touching source
       -- state. A same-channel implementation would replay Just (1,5) here.
       checkV verbosity "idleable Nothing is quiet and leaves source state untouched" $
-        turn (idleable countRepl) (((1, Just 5), True), Nothing)
+        turn (idleable (const (0, Nothing)) countRepl) (((1, Just 5), True), Nothing)
           == (((1, Just 5), False), Nothing),
       -- Idle ticks around real inputs neither evaluate nor replay output.
       -- Reevaluating idle changes both later counts and payloads.
       checkV verbosity "idleable scripts keep quiet ticks observationally invisible" $
-        session (idleable countRepl) [Nothing, Just 5, Nothing, Just 6, Nothing]
+        session (idleable (const (0, Nothing)) countRepl) [Nothing, Just 5, Nothing, Just 6, Nothing]
           == [Nothing, Just (1, 5), Nothing, Just (2, 6), Nothing],
       -- Compare with an independent source turn. Applying the premap to the
       -- channel, omitting the postmap, or manufacturing output fails.

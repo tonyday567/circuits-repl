@@ -29,8 +29,8 @@ module Circuit.Repl.Bus
   )
 where
 
-import Circuit.Machine (FoldBody (..))
-import Circuit.Repl (Repl, turn)
+
+import Circuit.Repl (Repl, fixedBirth, turn)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -84,10 +84,10 @@ ackSeat :: Name -> Seat
 ackSeat me = Seat me repl newSeatState
   where
     repl =
-      FoldBody
-        { begin = const newSeatState,
-          step = \(s, l) -> s {cursor = cursor s + 1, lastPost = Just l},
-          extract = \s -> case lastPost s of
+      fixedBirth
+        (const newSeatState)
+        (\(s, l) -> s {cursor = cursor s + 1, lastPost = Just l})
+        ( \s -> case lastPost s of
             Nothing -> Nothing
             Just l ->
               let p = loggedPost l
@@ -101,7 +101,7 @@ ackSeat me = Seat me repl newSeatState
                             postThread = Just (loggedId l)
                           }
                     else Nothing
-        }
+        )
 
 -- | A seat that never prints. Its posts enter the log only via the
 -- external script.
@@ -109,11 +109,10 @@ runnerSeat :: Name -> Seat
 runnerSeat me = Seat me repl newSeatState
   where
     repl =
-      FoldBody
-        { begin = const newSeatState,
-          step = \(s, l) -> s {cursor = cursor s + 1, lastPost = Just l},
-          extract = const Nothing
-        }
+      fixedBirth
+        (const newSeatState)
+        (\(s, l) -> s {cursor = cursor s + 1, lastPost = Just l})
+        (const Nothing)
 
 -- | The outcome of a run: the final log, every turn's output in order
 -- ('Nothing's included), the final seats, and whether quiescence was

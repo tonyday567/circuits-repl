@@ -1,9 +1,10 @@
 -- | Repl-loop agents.
 --
--- An agent is a repl loop: read, evaluate, print, loop. As a 'FoldBody':
--- begin is the repl's birth (a fixed newborn state — a seat's birth is
--- prior to any input), step is read+evaluate folded into the channel,
--- extract is print, reading the fresh channel.
+-- An agent is a repl loop: read, evaluate, print, loop. The loop is a
+-- 'Body' over pure functions. 'commit' is read-and-evaluate, 'emit' is
+-- print reading the fresh channel, and 'init' is the first turn, so the
+-- newborn state is seeded through the same evaluate leg as every later
+-- turn.
 --
 -- Read and evaluate are one leg because they share a domain: "read"
 -- names the arrival of the @(state, input)@ pair, not a computation —
@@ -12,12 +13,20 @@
 -- completes, and because operationally a print can be late or never
 -- happen.
 --
+-- A seat's birth is prior to any input, and a 'Body' seeds from its first
+-- input. 'fixedBirth' is where that difference is paid: it feeds the fixed
+-- newborn state through the evaluate leg, so the first input sees the
+-- state the birth produced and no input-free seed station is needed. An
+-- interface transform that must also birth without an input takes the
+-- birth as an explicit argument.
+--
 -- The output of a turn is @Maybe o@: a payload, or nothing. Nothing
 -- covers "evaluated, nothing to say"; it does not cover death — a
 -- crashed repl returns no answer at all, and no pure type names that.
 module Circuit.Repl
   ( -- * the repl
     Repl,
+    fixedBirth,
 
     -- * runners
     turn,
@@ -30,33 +39,32 @@ module Circuit.Repl
   )
 where
 
-import Circuit.Machine (FoldBody (..))
-import Circuit.Tensor (Bias (..))
+import Circuit.Machine (Body (..), Moore)
+import Circuit.Tensor (Bias (..), Const (..), unConst)
 
--- | A repl-loop agent over pure functions: a fixed newborn state,
--- state @s@ on the channel wire, input @i@, at most one payload about
--- @o@ per turn. Construct with the 'FoldBody' record directly.
-type Repl s i o = FoldBody (,) s (->) i (Maybe o)
+-- | A repl-loop agent over pure functions: state @s@ on the channel wire,
+-- input @i@, at most one payload about @o@ per turn.
+type Repl s i o = Moore (,) s (->) i (Maybe o)
 
--- | One turn, fused: fold the input in, print from the fresh channel.
--- 'begin' is not part of the tick — a mid-session turn works on a
--- state that already exists.
---
--- This is 'fuseFoldBody''s tick inlined: @copy .> tensor id e@ duplicates
--- the fresh channel for the extract leg, which at @(->)@ is
--- @\(s,i) -> let s' = k (s,i) in (s', e s')@. 'fuseFoldBody' itself asks
--- 'Copy' of the channel, and 'Copy' at @(->)@ is a closed per-type
--- instance set — it cannot cover an abstract @s@.
+-- | A seat from a fixed newborn state. The birth runs through the evaluate
+-- leg, so the first turn is the newborn state's first turn.
+fixedBirth :: (() -> s) -> ((s, i) -> s) -> (s -> Maybe o) -> Repl s i o
+fixedBirth b k e = Body (\i -> k (b (), i)) k (Const . e)
+
+-- | One turn: evaluate the input into the fresh channel, print from the
+-- fresh channel.
 turn :: Repl s i o -> (s, i) -> (s, Maybe o)
-turn (FoldBody _ k e) (s, i) = let s' = k (s, i) in (s', e s')
+turn (Body _ k e) (s, i) = let s' = k (s, i) in (s', unConst (e s'))
 
--- | A full session from birth: 'begin' seeds the channel, the fused
--- step iterates. States are kept.
+-- | A full session from the first input: 'init' seeds the channel, later
+-- inputs use 'commit'. States are kept. No input, no turn.
 runRepl :: Repl s i o -> [i] -> [(s, Maybe o)]
-runRepl r@(FoldBody b _ _) = go (b ())
+runRepl (Body j k e) = go
   where
-    go _ [] = []
-    go s (i : is) = let res@(s', _) = turn r (s, i) in res : go s' is
+    go [] = []
+    go (i : is) = let s' = j i in (s', unConst (e s')) : rest s' is
+    rest _ [] = []
+    rest s (i : is) = let s' = k (s, i) in (s', unConst (e s')) : rest s' is
 
 -- | The outputs of a session, states dropped.
 session :: Repl s i o -> [i] -> [Maybe o]
@@ -64,17 +72,18 @@ session r is = snd <$> runRepl r is
 
 -- | The product: both legs receive the input, both states advance, and
 -- the composite's payload is the pair of leg outputs. The composite
--- prints nothing exactly when both legs do.
+-- prints nothing exactly when both legs do. Both first turns occur,
+-- because 'init' composes leg-wise.
 await ::
   Repl s1 i o ->
   Repl s2 i o ->
   Repl (s1, s2) i (Maybe o, Maybe o)
-await (FoldBody b1 k1 e1) (FoldBody b2 k2 e2) =
-  FoldBody
-    (\() -> (b1 (), b2 ()))
+await (Body j1 k1 e1) (Body j2 k2 e2) =
+  Body
+    (\i -> (j1 i, j2 i))
     (\((s1, s2), i) -> (k1 (s1, i), k2 (s2, i)))
     ( \(s1, s2) ->
-        case (e1 s1, e2 s2) of
+        Const $ case (unConst (e1 s1), unConst (e2 s2)) of
           (Nothing, Nothing) -> Nothing
           pair -> Just pair
     )
@@ -94,12 +103,12 @@ race ::
   Repl s1 i o ->
   Repl s2 i o ->
   Repl (s1, s2) i o
-race bias (FoldBody b1 k1 e1) (FoldBody b2 k2 e2) =
-  FoldBody
-    (\() -> (b1 (), b2 ()))
+race bias (Body j1 k1 e1) (Body j2 k2 e2) =
+  Body
+    (\i -> (j1 i, j2 i))
     (\((s1, s2), i) -> (k1 (s1, i), k2 (s2, i)))
     ( \(s1, s2) ->
-        case (e1 s1, e2 s2) of
+        Const $ case (unConst (e1 s1), unConst (e2 s2)) of
           (Just x, Just y) -> case bias of
             LeftFirst -> Just x
             RightFirst -> Just y

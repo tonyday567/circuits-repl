@@ -42,7 +42,6 @@ library
     Circuit.Repl.Bus
     Circuit.Repl.Process
     Circuit.Repl.Transform
-    Circuit.Repl.Zoo
 
   build-depends:
     aeson >=2.0 && <3,
@@ -73,7 +72,6 @@ executable circuits-repl-axioma
     Axioma.Process
     Axioma.Repl
     Axioma.Transform
-    Axioma.Zoo
 
   build-depends:
     base >=4.20 && <5,

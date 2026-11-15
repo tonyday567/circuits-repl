@@ -2,18 +2,25 @@
 
 -- | A persistent cabal REPL and a free-agent channel owner.
 --
--- One owner reads channel posts in order and sends one command at a time to one
--- real @cabal repl@ process. Standard output and standard error share one pipe,
--- so a result cannot lose or reorder the error stream. A unique prompt marks
--- the end of a command; output is accumulated through the complete prompt,
--- rather than through a newline approximation.
+-- Input and output are independent: callers may send several commands before
+-- receiving output, and receive any number of output events before the prompt
+-- boundary. Standard output and standard error share one pipe, so their order
+-- is preserved. A unique prompt marks the end of a command.
+--
+-- The process may also write without being asked, for example from a thread it
+-- started earlier. 'receiveReplEvent' reports that text as ordinary output; the
+-- channel owner posts it as an uncorrelated observation rather than failing,
+-- because the prompt boundary is the only correlation available.
 module Circuit.Repl.Process
   ( -- * persistent REPL
     ReplProcess,
     replPid,
     replStarts,
+    ReplEvent (..),
     ReplOutcome (..),
     startRepl,
+    sendReplCommand,
+    receiveReplEvent,
     runReplCommand,
     stopRepl,
 
@@ -29,17 +36,16 @@ module Circuit.Repl.Process
   )
 where
 
-import Control.Concurrent (Chan, forkIO, newChan, readChan, writeChan)
-import Control.Exception (IOException, bracket, catch, try)
-import Control.Monad (void, when)
+import Control.Concurrent (Chan, forkIO, killThread, newChan, readChan, writeChan, writeList2Chan)
+import Control.Exception (IOException, bracket, catch, finally, throwIO, try)
+import Control.Monad (unless, void, when)
 import Data.Aeson (FromJSON (parseJSON), eitherDecodeStrictText, withObject, (.:))
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (fromMaybe, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import System.Exit (ExitCode (..))
-import System.IO (BufferMode (..), Handle, hClose, hFlush, hGetChar, hSetBuffering, hSetEncoding, utf8)
+import System.IO (BufferMode (..), Handle, hClose, hFlush, hSetBuffering, hSetEncoding, utf8)
 import System.Process
   ( CreateProcess (..),
     ProcessHandle,
@@ -55,13 +61,12 @@ import System.Process
   )
 import Prelude
 
--- | A process handle, its merged output stream, and the prompt boundary state.
+-- | A process handle and its independent input and output channels.
 data ReplProcess = ReplProcess
   { processInput :: Handle,
     processOutput :: Handle,
     processHandle :: ProcessHandle,
     processEvents :: Chan ReplEvent,
-    processBuffer :: IORef Text,
     processPid :: Maybe Int,
     processStarts :: Int
   }
@@ -75,15 +80,18 @@ replPid = processPid
 replStarts :: ReplProcess -> Int
 replStarts = processStarts
 
--- | A command either reached the next prompt or ended with the process.
+-- | One output observation: available text, a prompt boundary, or process exit.
+data ReplEvent
+  = ReplOutput Text
+  | ReplDone
+  | ReplEventExited ExitCode
+  deriving (Eq, Show)
+
+-- | A complete command outcome, used by the compatibility runner.
 data ReplOutcome
   = ReplCompleted Text
   | ReplExited Text ExitCode
   deriving (Eq, Show)
-
-data ReplEvent
-  = ReplOutput Text
-  | ReplEOF
 
 promptMarker :: Text
 promptMarker = "__CIRCUITS_REPL_PROCESS_DONE_7F3A91__"
@@ -106,9 +114,8 @@ startRepl project target = do
   mapM_ (\h -> hSetEncoding h utf8 >> hSetBuffering h NoBuffering) [input, output]
   pid <- fmap fromIntegral <$> getPid handle
   events <- newChan
-  buffer <- newIORef ""
-  let repl = ReplProcess input output handle events buffer pid 1
-  _ <- forkIO (outputReader output events)
+  let repl = ReplProcess input output handle events pid 1
+  _ <- forkIO (outputReader output handle events)
   promptOutcome <-
     runReplCommand repl $
       ":set prompt \"\\n"
@@ -127,13 +134,12 @@ startRepl project target = do
               ReplExited (promptOutput <> continuationOutput) code
         )
 
--- | Send one command and capture all merged output through the next private
--- prompt. On @:quit@ or a crash, the process exit code is explicit.
-runReplCommand :: ReplProcess -> Text -> IO ReplOutcome
-runReplCommand repl command = do
+-- | Send one command without waiting for any output.
+sendReplCommand :: ReplProcess -> Text -> IO (Maybe ReplOutcome)
+sendReplCommand repl command = do
   existing <- getProcessExitCode (processHandle repl)
   case existing of
-    Just code -> pure (ReplExited "" code)
+    Just code -> pure (Just (ReplExited "" code))
     Nothing -> do
       writeResult <-
         try $
@@ -142,11 +148,22 @@ runReplCommand repl command = do
       case writeResult of
         Left err -> do
           code <- waitForProcess (processHandle repl)
-          pure (ReplExited (T.pack (show (err :: IOException))) code)
-        Right () -> do
-          pending <- readIORef (processBuffer repl)
-          writeIORef (processBuffer repl) ""
-          readOutcome repl pending
+          pure (Just (ReplExited (T.pack (show (err :: IOException))) code))
+        Right () -> pure Nothing
+
+-- | Receive the next output observation, independently of sending commands.
+receiveReplEvent :: ReplProcess -> IO ReplEvent
+receiveReplEvent = readChan . processEvents
+
+-- | Compatibility: send one command and accumulate its output through 'ReplDone'.
+-- The caller must have drained every earlier independent command first; prompt
+-- boundaries, not this wrapper, supply command correlation.
+runReplCommand :: ReplProcess -> Text -> IO ReplOutcome
+runReplCommand repl command = do
+  sent <- sendReplCommand repl command
+  case sent of
+    Just outcome -> pure outcome
+    Nothing -> readOutcome repl ""
 
 -- | Stop the REPL if it is still running. Normal @:quit@ has already reaped it.
 stopRepl :: ReplProcess -> IO ()
@@ -228,9 +245,13 @@ data ChannelExit = ChannelExit
   }
   deriving (Eq, Show)
 
--- | Own one REPL and one channel subscription until the REPL exits. Requests
--- are handled strictly in log order. Owner posts are ignored, preventing a
--- result from becoming another command.
+-- | Own one REPL and one channel subscription until the REPL exits. Valid
+-- commands are committed strictly in log order, with their prompt-delimited
+-- outputs correlated by the same order. Malformed posts are rejected on
+-- arrival. Owner posts are ignored, preventing a result from becoming another
+-- command. Output that arrives while no command is pending is posted as an
+-- unsolicited observation, so a process that writes on its own neither stops
+-- the owner nor has its text counted against another requester.
 runChannel :: ChannelConfig -> IO ChannelExit
 runChannel config =
   bracket
@@ -282,32 +303,116 @@ runChannel config =
                     )
                 requestLoop config watch repl
 
+data PendingRequest = PendingRequest
+  { pendingPost :: BusPost,
+    pendingOutput :: Text
+  }
+
+data ChannelAction
+  = ChannelWatchLine Text
+  | ChannelWatchError IOException
+  | ChannelProcessEvent ReplEvent
+
+-- | Merge channel input and process output into one blocking runner. Commands
+-- can be committed while earlier output is pending; each 'ReplDone' retires the
+-- oldest pending request. Output accumulation is a channel-runner policy, not
+-- part of the independent process interface.
 requestLoop :: ChannelConfig -> (Handle, ProcessHandle) -> ReplProcess -> IO ChannelExit
 requestLoop config watch repl = do
   let (watchOutput, _) = watch
-  line <- TIO.hGetLine watchOutput
-  case eitherDecodeStrictText line of
-    Left err -> do
-      putStrLn ("repl-channel: ignored non-JSON watch output: " ++ err)
-      requestLoop config watch repl
-    Right post
-      | busPostFrom post == channelName config ->
-          requestLoop config watch repl
-      | otherwise -> do
-          let command = T.stripEnd (busPostBody post)
-          if T.null command || T.any (== '\n') command
-            then do
-              postOutcome config repl post "protocol_error" "expected one non-empty GHCi command per post"
-              requestLoop config watch repl
-            else do
-              outcome <- runReplCommand repl command
-              case outcome of
-                ReplCompleted output -> do
-                  postOutcome config repl post "completed" output
-                  requestLoop config watch repl
-                ReplExited output code -> do
-                  postOutcomeWithCode config repl post "exit" code output
-                  pure (ChannelExit code (replPid repl) (channelRoot config))
+  actions <- newChan
+  watchThread <- forkIO (watchActions watchOutput actions)
+  eventThread <- forkIO (eventActions repl actions)
+  finally
+    (loop actions [] "")
+    (mapM_ killThread [watchThread, eventThread])
+  where
+    loop actions pending unsolicited = do
+      action <- readChan actions
+      case action of
+        ChannelWatchError err -> throwIO err
+        ChannelWatchLine line ->
+          case eitherDecodeStrictText line of
+            Left err -> do
+              putStrLn ("repl-channel: ignored non-JSON watch output: " ++ err)
+              loop actions pending unsolicited
+            Right post
+              | busPostFrom post == channelName config ->
+                  loop actions pending unsolicited
+              | otherwise -> do
+                  let command = T.stripEnd (busPostBody post)
+                  if T.null command || T.any (== '\n') command
+                    then do
+                      postOutcome config repl post "protocol_error" "expected one non-empty GHCi command per post"
+                      loop actions pending unsolicited
+                    else do
+                      sent <- sendReplCommand repl command
+                      case sent of
+                        Nothing -> loop actions (pending <> [PendingRequest post ""]) unsolicited
+                        Just (ReplCompleted output) -> do
+                          postOutcome config repl post "completed" output
+                          loop actions pending unsolicited
+                        Just (ReplExited output code) -> do
+                          let pending' = pending <> [PendingRequest post output]
+                          flushUnsolicited config repl unsolicited
+                          postExitOutcomes config repl code pending'
+                          pure (ChannelExit code (replPid repl) (channelRoot config))
+        ChannelProcessEvent (ReplOutput output) ->
+          case pending of
+            [] -> do
+              let (complete, remaining) = splitLines (unsolicited <> output)
+              postUnsolicited config repl complete
+              loop actions pending remaining
+            current : rest ->
+              loop actions (current {pendingOutput = pendingOutput current <> output} : rest) unsolicited
+        ChannelProcessEvent ReplDone ->
+          case pending of
+            [] -> do
+              flushUnsolicited config repl unsolicited
+              unsolicitedOutcome config repl "unsolicited_boundary" ""
+              loop actions pending ""
+            current : rest -> do
+              postOutcome config repl (pendingPost current) "completed" (pendingOutput current)
+              loop actions rest unsolicited
+        ChannelProcessEvent (ReplEventExited code) -> do
+          flushUnsolicited config repl unsolicited
+          postExitOutcomes config repl code pending
+          pure (ChannelExit code (replPid repl) (channelRoot config))
+
+-- | Split unprompted text into its complete lines and the partial remainder. A
+-- line split across reads is therefore reported once, not once per read.
+splitLines :: Text -> (Text, Text)
+splitLines text =
+  let (complete, rest) = T.breakOnEnd "\n" text
+   in if T.null complete then ("", rest) else (complete, rest)
+
+-- | Post unprompted output lines. Whitespace alone is not an observation.
+postUnsolicited :: ChannelConfig -> ReplProcess -> Text -> IO ()
+postUnsolicited config repl output =
+  unless (T.null (T.strip output)) (unsolicitedOutcome config repl "unsolicited_output" output)
+
+-- | Post a held partial line before the prompt returns or the runner stops.
+flushUnsolicited :: ChannelConfig -> ReplProcess -> Text -> IO ()
+flushUnsolicited = postUnsolicited
+
+watchActions :: Handle -> Chan ChannelAction -> IO ()
+watchActions output actions = do
+  next <- try (TIO.hGetLine output) :: IO (Either IOException Text)
+  case next of
+    Left err -> writeChan actions (ChannelWatchError err)
+    Right line -> do
+      writeChan actions (ChannelWatchLine line)
+      watchActions output actions
+
+eventActions :: ReplProcess -> Chan ChannelAction -> IO ()
+eventActions repl actions = do
+  event <- receiveReplEvent repl
+  writeChan actions (ChannelProcessEvent event)
+  eventActions repl actions
+
+postExitOutcomes :: ChannelConfig -> ReplProcess -> ExitCode -> [PendingRequest] -> IO ()
+postExitOutcomes config repl code =
+  mapM_ (\pending -> postOutcomeWithCode config repl (pendingPost pending) "exit" code (pendingOutput pending))
 
 postOutcome :: ChannelConfig -> ReplProcess -> BusPost -> Text -> Text -> IO ()
 postOutcome config repl request status output = do
@@ -329,6 +434,25 @@ postOutcomeWithCode config repl request status code output = do
       (channelName config)
       (Just (busPostId request))
       (resultHeader repl request status (Just code) <> "\n" <> output)
+  pure ()
+
+-- | Post process text that no request asked for. There is no request to
+-- correlate, so the post carries no request id and no thread.
+unsolicitedOutcome :: ChannelConfig -> ReplProcess -> Text -> Text -> IO ()
+unsolicitedOutcome config repl status output = do
+  _ <-
+    postBus
+      (channelRoot config)
+      (channelAddress config)
+      (channelName config)
+      Nothing
+      ( "REPL_UNSOLICITED status="
+          <> status
+          <> " pid="
+          <> pidText repl
+          <> " starts=1\n"
+          <> output
+      )
   pure ()
 
 resultHeader :: ReplProcess -> BusPost -> Text -> Maybe ExitCode -> Text
@@ -388,36 +512,101 @@ stopBusWatch (output, handle) = do
   when (isNothing existing) (terminateProcess handle)
   closeQuietly output
 
-outputReader :: Handle -> Chan ReplEvent -> IO ()
-outputReader handle events = do
-  _ <- try loop :: IO (Either IOException ())
-  writeChan events ReplEOF
+outputReader :: Handle -> ProcessHandle -> Chan ReplEvent -> IO ()
+outputReader handle process events = do
+  remaining <- loop initialMarker
+  emit (markerPending remaining)
+  code <- waitForProcess process
+  writeChan events (ReplEventExited code)
   where
-    loop = do
-      c <- hGetChar handle
-      writeChan events (ReplOutput (T.singleton c))
-      loop
+    loop marker = do
+      next <- try (TIO.hGetChunk handle) :: IO (Either IOException Text)
+      case next of
+        Left _ -> pure marker
+        Right chunk
+          | T.null chunk -> pure marker
+          | otherwise -> do
+              let (observations, marker') = stepChunk marker chunk
+              writeList2Chan events observations
+              loop marker'
+    emit text = unless (T.null text) (writeChan events (ReplOutput text))
+
+-- | Classify one read from the pipe into at most one output observation per
+-- contiguous run of text, so event count follows reads rather than characters.
+stepChunk :: MarkerWait -> Text -> ([ReplEvent], MarkerWait)
+stepChunk marker chunk =
+  let (observations, marker') = T.foldl' step ([], marker) chunk
+   in (coalesce (reverse observations), marker')
+  where
+    step (observations, marker') c =
+      let (new, marker'') = stepMarker marker' c
+       in (reverse new <> observations, marker'')
+
+-- | Merge adjacent output observations. Nothing can arrive between them except
+-- a boundary, so the merged text is the same stream text.
+coalesce :: [ReplEvent] -> [ReplEvent]
+coalesce = foldr merge []
+  where
+    merge (ReplOutput a) (ReplOutput b : rest) = ReplOutput (a <> b) : rest
+    merge event rest = event : rest
+
+-- | Prompt detection state: received text not yet classified, and whether the
+-- last classified event was a prompt boundary.
+data MarkerWait = MarkerWait
+  { markerPending :: Text,
+    markerBoundary :: Bool
+  }
+
+initialMarker :: MarkerWait
+initialMarker = MarkerWait "" False
+
+-- | Classify one received character. The newline that ends the prompt line
+-- belongs to the boundary, not to any command's output, so it is consumed
+-- before anything else is classified.
+stepMarker :: MarkerWait -> Char -> ([ReplEvent], MarkerWait)
+stepMarker marker c =
+  classify (absorb (markerPending marker <> T.singleton c) (markerBoundary marker))
+  where
+    absorb pending True = case T.uncons pending of
+      Just ('\n', rest) -> MarkerWait rest False
+      _ -> MarkerWait pending False
+    absorb pending False = MarkerWait pending False
+
+classify :: MarkerWait -> ([ReplEvent], MarkerWait)
+classify marker =
+  case T.breakOn promptMarker pending of
+    (before, rest)
+      | not (T.null rest) ->
+          ( [ReplOutput before | not (T.null before)] <> [ReplDone],
+            MarkerWait (T.drop (T.length promptMarker) rest) True
+          )
+      | otherwise ->
+          let keep = markerSuffixLength pending
+              (output, remaining) = T.splitAt (T.length pending - keep) pending
+              observations = [ReplOutput output | not (T.null output)]
+           in (observations, MarkerWait remaining False)
+  where
+    pending = markerPending marker
+
+-- | Length of the longest suffix of the received text that is a proper prefix
+-- of the prompt marker. Only that much has to be withheld: any other text
+-- cannot become part of the marker, so holding it back would delay output that
+-- is already complete.
+markerSuffixLength :: Text -> Int
+markerSuffixLength pending = go (min (T.length pending) (T.length promptMarker - 1))
+  where
+    go k
+      | k <= 0 = 0
+      | T.takeEnd k pending == T.take k promptMarker = k
+      | otherwise = go (k - 1)
 
 readOutcome :: ReplProcess -> Text -> IO ReplOutcome
-readOutcome repl accumulated =
-  case splitPrompt accumulated of
-    Just (output, leftover) -> do
-      writeIORef (processBuffer repl) leftover
-      pure (ReplCompleted output)
-    Nothing -> do
-      event <- readChan (processEvents repl)
-      case event of
-        ReplOutput chunk -> readOutcome repl (accumulated <> chunk)
-        ReplEOF -> do
-          code <- waitForProcess (processHandle repl)
-          pure (ReplExited accumulated code)
-
-splitPrompt :: Text -> Maybe (Text, Text)
-splitPrompt input =
-  let (before, rest) = T.breakOn promptMarker input
-   in if T.null rest
-        then Nothing
-        else Just (before, T.drop (T.length promptMarker) rest)
+readOutcome repl accumulated = do
+  event <- receiveReplEvent repl
+  case event of
+    ReplOutput chunk -> readOutcome repl (accumulated <> chunk)
+    ReplDone -> pure (ReplCompleted accumulated)
+    ReplEventExited code -> pure (ReplExited accumulated code)
 
 decodePost :: Text -> IO BusPost
 decodePost input = case eitherDecodeStrictText (T.strip input) of
